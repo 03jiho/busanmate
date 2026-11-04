@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS place (
     description  TEXT,
     open_hours   JSONB,                           -- 파싱 실패 시 {"raw": "..."}
     indoor       BOOLEAN,                         -- 불명이면 NULL
-    tel          VARCHAR(50),
+    tel          VARCHAR(200),                    -- 번호 여러 개가 들어오기도 함 (최대 59자 확인)
     url          VARCHAR(500),
     license      VARCHAR(100) NOT NULL,
     fetched_at   TIMESTAMPTZ  NOT NULL DEFAULT now(),

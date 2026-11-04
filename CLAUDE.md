@@ -81,7 +81,9 @@ ADR 요약: 001 계층형 모놀리식 API · 002 RAG(속성 필터+벡터) + `[
 - LLM/VLM/임베딩 모델명
 
 ## 환경
-- Python 3.11, 로컬 `.venv` (Windows: `.venv/Scripts/python`). Docker는 이 PC에 아직 설치되어 있지 않다. `docker-compose.yml` 구성은 ui:8501, api:8000, db(PostgreSQL):5432, vector(Chroma):8001.
+- Python 3.11, 로컬 `.venv` (Windows: `.venv/Scripts/python`). `docker-compose.yml` 구성은 ui:8501, api:8000, db(PostgreSQL):5432, vector(Chroma):8001.
+- Docker Desktop은 사용자 단위로 설치되어 있다: `%LOCALAPPDATA%\Programs\DockerDesktop\resources\bin\docker.exe`(Git Bash에서는 PATH에 없으므로 이 경로를 PATH에 추가해 쓴다). 엔진이 꺼져 있으면 `Docker Desktop.exe`를 먼저 실행한다. 개발 중에는 `docker compose up -d db vector`만 띄우고, api와 ui는 로컬 `.venv`에서 실행한다.
+- Gemini 무료 등급 임베딩 한도는 **분당 100건**이고, 배치 안의 문서 하나하나가 1건으로 계산된다. 그래서 `embedding.batch_size`=90, 배치 사이 61초 대기(`batch_interval_s`)로 설정했다.
 - **LLM/VLM**: Google Gemini(AI Studio 무료 등급), 키는 `GEMINI_API_KEY`. 반드시 `LLMClient`/`VLMClient` 인터페이스 뒤에서 호출하고, 제공자는 `LLM_PROVIDER`, 모델명은 config.yaml로 고른다. 무료 등급 한도를 고려해 응답 캐시와 호출 로그를 둔다(NFR-010).
 - **`.env` 변수** (`.env.example`에 이름만 있음):
 
@@ -115,6 +117,16 @@ ADR 요약: 001 계층형 모놀리식 API · 002 RAG(속성 필터+벡터) + `[
 - 공공 API 호출 한도는 기능별 하루 10,000건(개발계정)이다. 부산 3종 서비스는 이용허락범위 제한이 없다(SRS §2.5). 모든 장소·이미지에 `license`와 원본 링크를 저장하고 표시한다.
 - 외부 API에 장애가 나면 DB·캐시 데이터로 응답하고 "최신 정보 아님"을 표시한다(NFR-003, AC-006). 테스트에서는 외부 API를 mock으로 대체한다.
 
+## 데이터 수집 (1단계 결정, 2026-11-04)
+- `.env`의 부산 URL은 서비스 경로까지만 있다. 호출할 때 오퍼레이션 `getAttractionKr` / `getFoodKr` / `getFestivalKr`를 붙인다(config `sources`). 응답은 JSON(UTF-8)이다. 명소 213, 맛집 471, 축제 41건(그중 기간을 읽을 수 있는 38건 적재).
+- 키 필드: `UC_SEQ`(→source_id), `MAIN_TITLE`(끝의 "(한,영,중간,중번,일)" 제거), `GUGUN_NM`, `LAT/LNG`, `ADDR1`, `ITEMCNTNTS`, `USAGE_DAY_WEEK_AND_TIME`(운영시간, 축제는 기간), `HLDY_INFO`, `MAIN_IMG_NORMAL`(visitbusan.net 이미지 → place_image, 사진 기능 소스), `RPRSNTV_MENU`(맛집).
+- 원본에는 분류 필드가 없다. 그래서 이름 규칙(config `classify`)으로 category와 indoor를 추정한다. 맛집은 음식점/실내로 둔다. 규칙에 걸리지 않으면 관광지/indoor NULL로 둔다.
+- 축제 기간은 자유 형식 문자열이라 `parse_period`로 읽는다. 연도가 없으면 적재하지 않는다.
+- 임베딩: Gemini `gemini-embedding-001`, 768차원. 문서는 `RETRIEVAL_DOCUMENT`, 질의는 `RETRIEVAL_QUERY`(`services/embedding.py`). 내용이 바뀐 장소만 다시 임베딩한다.
+- 원본에서 사라진 장소는 `is_active=FALSE`로 바꾸고 Chroma에서도 지운다. 응답이 비어 있으면 실패로 처리한다(전체가 비활성화되는 것을 막기 위해).
+- Chroma는 서버와 클라이언트 모두 1.5.8이다(0.6.x는 numpy<2를 요구해 pandas·Streamlit과 충돌).
+- 실행: `docker compose up -d db vector` 후 `python -m pipeline.run [busan_attraction ...]`. 결과는 `ingest_log`에 남는다. 로그에는 serviceKey가 섞이지 않게 오류 종류만 남긴다(`pipeline/run.py:_safe`).
+
 ## 작업 순서
 0. 뼈대: config 로더, `/api/health`, `db/schema.sql`, `docker-compose.yml`, requirements.txt. 빈 파일은 미리 만들지 않는다.
 1. 데이터: 부산 3종 API 샘플로 필드 매핑 → DataPipeline(upsert, ingest_log) → 텍스트 임베딩 → Chroma
@@ -123,7 +135,7 @@ ADR 요약: 001 계층형 모놀리식 API · 002 RAG(속성 필터+벡터) + `[
 4. API·UI: API-001~008, 요청 한도, Streamlit + 카카오맵, 출처·기상청 표기
 5. 사진: 이미지 수집(이용 조건 확인), CLIP, τ 판정, VLM 폴백, Top-5 평가
 
-미결: 텍스트 임베딩·CLIP 모델(PoC), TourAPI 키·엔드포인트 없음(이미지 출처는 부산명소 API 필드로 확인), 중기예보 엔드포인트 없음, 운영시간 형식, indoor 추정 규칙.
+미결: CLIP 모델(PoC), 중기예보 엔드포인트 없음, 운영시간 파싱(현재 원문을 `open_hours.raw`에 저장), 규칙에 안 걸린 관광지 48곳의 indoor, 출처 원본 링크(HOMEPAGE_URL이 없는 장소가 많음).
 
 ## GitHub 규칙
 - `main` 직접 푸시 금지. `feature/<기능>` 브랜치 → PR → 리뷰 1명 + CI(ruff, pytest, gitleaks).

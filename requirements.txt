@@ -4,6 +4,9 @@ streamlit==1.66.1
 requests==2.34.2
 PyYAML==6.0.3
 python-dotenv==1.2.4
+psycopg[binary]==3.3.7
+chromadb-client==1.5.8      # docker-compose의 chromadb/chroma 이미지와 같은 버전
+google-genai==2.34.0
 # dev
 pytest==9.2.0
 httpx==0.28.1

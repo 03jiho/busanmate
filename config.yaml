@@ -9,8 +9,53 @@ llm:
   cache_ttl_s: 86400                # 응답 캐시 (이동시간은 캐시 대상 아님, ADR-008)
 
 embedding:
-  text_model: null                  # 미정 (SDD §10.4, PoC 후 확정)
-  image_model: null                 # CLIP 계열, 미정
+  text_provider: gemini             # 결정(2026-11-04): Gemini 임베딩 API
+  text_model: gemini-embedding-001
+  text_dim: 768
+  batch_size: 90                    # 무료 등급: 문서 1개 = 요청 1건, 분당 100건 한도
+  batch_chars: 20000                # 무료 등급 분당 30,000토큰 한도 → 배치당 글자 수 상한 (한글 1자 ≈ 1토큰 이하로 가정)
+  batch_interval_s: 61              # 배치 사이 대기 (최초 적재만 수 분, 이후엔 바뀐 장소만)
+  max_doc_chars: 1500               # 임베딩 문서 = 이름 + 설명 앞부분
+  image_model: null                 # CLIP 계열, 미정 (5단계)
+
+# 수집 소스 (COMP-12, DATA-01·03). url_env의 서비스 경로 뒤에 operation을 붙여 호출
+sources:
+  busan_attraction:
+    url_env: BUSAN_ATTRACTION_URL
+    operation: getAttractionKr
+    kind: place
+    label: 부산광역시_부산명소정보 서비스 (공공데이터포털)
+    license: 공공데이터포털 부산광역시 제공, 이용허락범위 제한 없음
+  busan_food:
+    url_env: BUSAN_FOOD_URL
+    operation: getFoodKr
+    kind: place
+    label: 부산광역시_부산맛집정보 서비스 (공공데이터포털)
+    license: 공공데이터포털 부산광역시 제공, 이용허락범위 제한 없음
+  busan_festival:
+    url_env: BUSAN_FESTIVAL_URL
+    operation: getFestivalKr
+    kind: festival
+    label: 부산광역시_부산축제정보 서비스 (공공데이터포털)
+    license: 공공데이터포털 부산광역시 제공, 이용허락범위 제한 없음
+
+ingest:
+  page_size: 1000
+  timeout_s: 60
+
+# 분류·실내 여부 추정 (원본에 분류 필드가 없음). 이름에 대해 위에서부터 첫 매치.
+# names: 정확히 일치, keywords: 포함되면 매치, suffixes: 이름(끝의 "부산" 제외)이 그 글자로 끝나면 매치.
+# indoor: true/false/null(불명)
+classify:
+  food: {category: 음식점, indoor: true}
+  rules:
+    - {category: 시장, indoor: null, keywords: [시장, 지하도상가]}
+    - {category: 해변, indoor: false, names: [해운대, 청사포와 미포, 동백섬], keywords: [해수욕장, 해변, 해안, 해파랑길]}
+    - {category: 문화시설, indoor: true, keywords: [박물관, 미술관, 갤러리, 기념관, 역사관, 문화관, 문학관, 과학관, 전시관, 홍보관, 체험관, 민속관, 도서관, 센터, 문화원, 국악원, 아쿠아리움, 생가, 전당, 극장, 아트, 뮤지엄], suffixes: [관]}
+    - {category: 공원·자연, indoor: false, keywords: [공원, 숲, 수목원, 전망대, 등대, 계곡, 폭포, 습지, 생태, 해상케이블카, 스카이워크], suffixes: [대, 도, 산, 봉]}
+    - {category: 사찰·종교, indoor: false, keywords: [성당, 교회, 향교, 사찰], suffixes: [사, 암]}
+    - {category: 거리·마을, indoor: false, keywords: [마을, 골목, 거리, 광장, 길]}
+  default: {category: 관광지, indoor: null}
 
 search:                             # COMP-05, FR-002
   candidates_n: 30

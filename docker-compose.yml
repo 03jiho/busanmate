@@ -32,10 +32,10 @@ services:
       - ./db/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
 
   vector:
-    image: chromadb/chroma:0.6.3
+    image: chromadb/chroma:1.5.8     # chromadb-client와 같은 버전 유지
     ports: ["8001:8000"]
     volumes:
-      - chroma:/chroma/chroma
+      - chroma:/data
 
 volumes:
   pgdata:
