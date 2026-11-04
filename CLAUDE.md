@@ -1,0 +1,127 @@
+# BusanMate — 부산 맞춤 여행코스 안내 서비스 (프로토타입)
+
+## 문서
+- 기준 문서: `docs/01_요구사항명세서SRS_BusanMate.md`, `docs/02_프로젝트계획서_BusanMate.md`, `docs/03_소프트웨어설계서_BusanMate.md`.
+  md는 docx에서 자동 생성한 사본이다. docx가 바뀌면 `.venv/Scripts/python docs/docx2md.py`로 다시 만들고 md를 직접 고치지 않는다.
+- 요구사항 ID(FR/NFR/AI-REQ/UC/AC)와 설계 ID(COMP/API/ADR/ERR)를 코드 주석·테스트 이름·PR에 적어 추적성을 유지한다.
+- 문서의 수치·임계값은 모두 **초안 값**이다(SRS §9, SDD §1.1). 평가 후 조정한다.
+- 문서 간 불일치: 계획서는 카카오 길찾기를 "도보·자동차"로 적었지만 SRS §2.5·SDD §3.1과 실제 API는 **자동차만**이다. 자동차만을 따른다.
+
+## 아키텍처 (SDD §2)
+6계층. 상위 계층은 **바로 아래 계층만** 호출한다.
+
+| 계층 | 구성 | 디렉터리 |
+|---|---|---|
+| 사용자 | 브라우저 (Chrome/Edge) | – |
+| 프레젠테이션 | Streamlit. 상태는 `session_id`만 보유, api만 호출 | `ui/` |
+| API | FastAPI: 요청 검증, 세션 식별, 관리자 토큰, 요청 한도, 오류 표준화 | `api/` |
+| 에이전트 | LangGraph 오케스트레이터, QueryParser, ResponseBuilder, SessionStore | `agent/` (프롬프트는 `agent/prompts/`, 버전 관리) |
+| 서비스·도구 | SearchService, Scorer, RoutePlanner, ImageService / Weather·Festival·MapTool | `services/`, `tools/` |
+| 데이터·외부 | PostgreSQL, Chroma, DataPipeline, 외부 API | `db/`, `pipeline/` |
+
+ADR 요약: 001 계층형 모놀리식 API · 002 RAG(속성 필터+벡터) + `[[place_id]]` 검증 · 003 LLM은 해석·도구 선택·설명만, 점수화·경로는 코드 · 004 공공데이터는 배치 적재, 날씨·이동시간만 실시간 · 005 PostgreSQL(속성)+Chroma(벡터) · 006 공통 BaseTool · 007 세션은 서버 메모리 TTL 2h, 사진 비저장 · 008 LLM·VLM 응답 캐시(이동시간 제외).
+
+## 컴포넌트 (SDD §3)
+| ID | 컴포넌트 | 책임 | 위치 |
+|---|---|---|---|
+| COMP-01 | Streamlit UI | 채팅·사진 업로드·선호 설정, 코스·지도·출처 표시, 관리자 화면 | `ui/` |
+| COMP-02 | API 서버 | 요청 검증, 세션, 관리자 토큰, 요청 한도, 오류 표준화 | `api/` |
+| COMP-03 | AgentOrchestrator | LangGraph 흐름 제어, 도구 선택·호출, **턴당 도구 호출 6회 제한** | `agent/` |
+| COMP-04 | QueryParser | 지역·날짜·기간(1~3일)·동행·테마·시간·이동수단 추출(structured output), 되묻기 | `agent/` |
+| COMP-05 | SearchService | 속성 필터 + 벡터 하이브리드 검색, 후보 N, 조건 완화 | `services/` |
+| COMP-06 | Scorer · RoutePlanner | 점수화, K 결정, 다양성 보정, 일별 분배, 방문 순서 최적화 | `services/` |
+| COMP-07 | 도구 어댑터 | Weather·Festival·Map, BaseTool 구현, 실패 시 폴백 | `tools/` |
+| COMP-08 | ImageService | 사진 검증·CLIP 임베딩, 유사 장소, VLM 장면 설명 폴백 | `services/` |
+| COMP-09 | ResponseBuilder | 설명 생성, `verify_places`, 출처 첨부, 응답 조립 | `agent/` |
+| COMP-10 | SessionStore | 선호·직전 코스·최근 N턴 (TTL 2h, 메모리) | `agent/` |
+| COMP-11 | LLM/VLM Client | 모델 호출 추상화, 응답 캐시, 호출 로그(모델·토큰·비용·지연) | `services/` |
+| COMP-12 | DataPipeline | 수집·정제·중복 제거·임베딩·적재, `ingest_log` | `pipeline/` |
+
+### 핵심 규칙
+- **환각 방지**: LLM에는 이번 턴 후보만(id·이름·분류·한 줄 요약) 보여 주고, 장소는 `[[place_id]]` 마커로만 가리키게 한다. `verify_places`가 마커 id를 DB·후보와 대조해 없으면 그 문장을 지우고, 통과한 마커는 DB 이름으로 치환한다. 이름·좌표·출처는 항상 DB에서 채운다. 출처 없는 장소는 응답에서 뺀다.
+- **LLM vs 코드**(AI-REQ-04): 점수화·장소 선택·순서·시간 계산은 결정적 코드. `build_course`는 `search_places` 결과가 있을 때만 실행하고, 순서가 어긋난 호출은 오류로 돌려준다.
+- **에이전트 도구**: `search_places`, `get_weather`, `get_festivals`, `build_course`, `get_route_times`, `edit_course` (`search_by_image`는 별도 엔드포인트).
+- **BaseTool**: 속성 `name, description, args_schema, timeout_s`, 메서드 `run(args) -> ToolResult`, `fallback(args, err)`. `ToolResult = {ok, data, sources, notices, stale}`. 오케스트레이터는 레지스트리에서 이름으로 찾는다. 도구를 추가해도 에이전트 코드는 고치지 않는다(NFR-009).
+- **알고리즘**(SDD §3.1): `S(p) = w1·sim + w2·pref + w3·weather − w4·dist`. weather는 강수확률 ≥ 임계면 실내 1/실외 0, 예보가 없으면 0.5. `K = clamp(floor(가용시간 / (평균 체류 + 평균 이동)), 2, 6)`. 같은 분류는 λ만큼 감점하고 3곳 연속은 금지. 순서는 순열 전수 탐색(≤720). 다일 일정은 위·경도 k-means(k=일수)로 나누고 전체 일정에서 장소 중복을 막는다. 후보가 2곳 미만이면 운영시간 → 실내 → 구 순서로 조건을 완화하고 사용자에게 알린다.
+- **사진**: JPG/PNG ≤10MB(확장자와 매직바이트 확인). 메모리에서만 처리하고 응답 후 폐기한다. 최고 유사도 ≥ τ이면 인식, 미만이면 VLM 장면 설명 → `place_text` 검색으로 5곳을 고른다. 상위 10개 이미지를 place_id별 최대값으로 집계한다.
+
+## API (SDD §6)
+| ID | Method | Endpoint | Request → Response |
+|---|---|---|---|
+| API-001 | POST | `/api/chat` | `{session_id, message}` → `{answer, conditions, course, sources, notices}` |
+| API-002 | POST | `/api/search/image` | multipart(session_id, file) → `{mode, matches, sources, notices}` |
+| API-003 | GET | `/api/session/{id}/preferences` | → `{theme, mode, companion}` |
+| API-004 | PUT | `/api/session/{id}/preferences` | `{theme, mode, companion}` → `{ok}` |
+| API-005 | GET | `/api/session/{id}/course` | → `{course}` |
+| API-006 | POST | `/api/admin/ingest` (X-Admin-Token) | `{sources?}` → `{run_id}` |
+| API-007 | GET | `/api/admin/ingest/{run_id}` | → `{status, new, updated, skipped}` |
+| API-008 | GET | `/api/health` | → `{status}` |
+
+- `course`는 날짜별 `items[{order, place_id, name, lat, lng, reason, leg_to_next{minutes, meters, estimated}}]`로 구성한다.
+- 관리자 토큰은 `ADMIN_TOKEN`과 **상수 시간 비교**(`hmac.compare_digest`)한다.
+- 오류 코드: 400 INVALID_INPUT(되묻기) · 401 UNAUTHORIZED · 413/415 FILE_* · 429 RATE_LIMITED · 502/504 UPSTREAM_*(폴백 응답 + "최신 정보 아님") · 500 INTERNAL(상세는 서버 로그에만).
+
+## DB (SDD §5.2)
+- `place`: place_id BIGSERIAL PK, (source, source_id) UNIQUE, name, category, sub_category?, gu, address, lat, lng(좌표가 없으면 적재하지 않음), description?, open_hours?(JSONB, 파싱 실패 시 원문), indoor?(불명이면 NULL), tel?, url?, license, fetched_at, is_active
+- `place_image`: image_id PK, place_id FK, url, license(이용 조건이 확인된 것만), embedding_id?
+- `festival`: festival_id PK, source_id UNIQUE, name, description?, start_date, end_date, lat?, lng?, address?, url?, license, fetched_at
+- `ingest_log`: log_id PK, run_at, source, new_cnt, updated_cnt, skipped_cnt, status, message?
+- Chroma `place_text`(id=place_id, 문서=이름+설명, 메타 gu·category·indoor, cosine) / `place_image`(id=image_id, 메타 place_id).
+- 세션은 DB에 저장하지 않는다(메모리 dict: preferences, last_course, 최근 N턴).
+- 수집은 멱등이어야 한다. 2회 실행해도 중복이 0건이어야 한다(AC-007). 소스가 실패하면 건너뛰고 최대 3회 재시도한다.
+
+## 설정 원칙: 수치는 config.yaml, 비밀값은 .env
+초안 수치는 코드에 하드코딩하지 않고 전부 `config.yaml`에 둔다(SDD §10.3).
+- 점수 가중치 w1~w4 = 0.4 / 0.3 / 0.2 / 0.1, 다양성 감점 λ = 0.1
+- 강수확률 임계 60%, 날씨 캐시 1시간
+- 구간 보정계수: 같은 구 1.3, 인접 구 1.5, 바다·다리 구간 1.8 (인접 구·바다 구간 표도 config)
+- 후보 수 N = 30, 하루 장소 수 K = 2~6, 기본 가용 시간 9h, 최대 기간 3일, 기본 체류 시간, 수단별 이동 속도
+- 사진 임계 τ = 0.80, 상위 이미지 10, 결과 5
+- 세션 TTL 2h, 최근 대화 N턴, 요청 한도 세션당 분당 20회, 턴당 도구 호출 6회, 도구별 timeout
+- LLM/VLM/임베딩 모델명
+
+## 환경
+- Python 3.11, 로컬 `.venv` (Windows: `.venv/Scripts/python`). Docker는 이 PC에 아직 설치되어 있지 않다. `docker-compose.yml` 구성은 ui:8501, api:8000, db(PostgreSQL):5432, vector(Chroma):8001.
+- **LLM/VLM**: Google Gemini(AI Studio 무료 등급), 키는 `GEMINI_API_KEY`. 반드시 `LLMClient`/`VLMClient` 인터페이스 뒤에서 호출하고, 제공자는 `LLM_PROVIDER`, 모델명은 config.yaml로 고른다. 무료 등급 한도를 고려해 응답 캐시와 호출 로그를 둔다(NFR-010).
+- **`.env` 변수** (`.env.example`에 이름만 있음):
+
+| 변수 | 용도 |
+|---|---|
+| `DATA_GO_KR_SERVICE_KEY` | 공공데이터포털 서비스키 (부산 3종 + 기상청) |
+| `BUSAN_ATTRACTION_URL` / `BUSAN_FOOD_URL` / `BUSAN_FESTIVAL_URL` | 부산명소·부산맛집·부산축제 정보 엔드포인트 |
+| `KMA_FORECAST_URL` | 기상청 단기예보 엔드포인트 |
+| `KAKAO_REST_API_KEY` | 카카오모빌리티 길찾기(서버) |
+| `KAKAO_MOBILITY_DIRECTIONS_URL` | 카카오모빌리티 자동차 길찾기 엔드포인트 |
+| `KAKAO_JAVASCRIPT_KEY` | 카카오맵 JS SDK(브라우저 지도 표시) |
+| `LLM_PROVIDER` | LLMClient 구현 선택 (기본 gemini) |
+| `GEMINI_API_KEY` | Gemini API |
+| `ADMIN_TOKEN` | 관리자 API(`X-Admin-Token`) |
+
+### 비밀값 규칙 (절대)
+- 키·토큰 **값**을 코드, 테스트, 로그, 커밋, 문서, 채팅 출력에 절대 쓰지 않는다. 값은 런타임에 `.env`(환경변수)에서만 읽는다.
+- `.env`를 cat·print·grep으로 출력하지 않는다. 변수 존재 여부는 이름만 확인한다.
+- `.env`는 `.gitignore`에 있다. 저장소에는 값이 빈 `.env.example`만 올린다.
+- 외부 호출 URL이나 오류 메시지를 로그로 남길 때는 `serviceKey`, `authKey`, `Authorization` 같은 값을 마스킹한다. 예외 메시지 안에 키가 섞인 URL이 들어가는 경우도 조심한다.
+- 질의 원문, 업로드 사진, 토큰은 로그에 남기지 않는다. 로그에는 request_id, 세션 해시, 단계별 지연, 도구 목록, 오류 코드, 폴백 여부만 남긴다(SDD §8).
+- 카카오 JS 키는 브라우저에 노출되는 키다. 카카오 개발자 콘솔에 등록한 도메인(로컬은 localhost)에서만 쓰고, REST 키는 서버에서만 쓴다.
+
+### 외부 API 제약
+- **카카오모빌리티 길찾기는 자동차 경로만** 제공한다(REST API 키 사용). 도보·대중교통 이동시간, 그리고 자동차 조회가 실패했을 때는 **직선거리(haversine) × 구간 보정계수 ÷ 수단 속도**로 추정하고 `estimated=true`와 "예상"을 표시한다.
+- **이동시간·경로는 저장·캐시하지 않는다**(DB, 파일, 메모리 캐시, LLM 응답 캐시 모두 해당). 매 요청마다 조회하거나 추정한다.
+- **기상청 예보는 출처 표시 필수(공공누리 제1유형)**: 날씨를 반영한 응답과 화면에 "출처: 기상청"을 표기한다. 예보 범위 밖이거나 조회가 실패하면 날씨를 반영하지 않고(weather=0.5) 사용자에게 알린다.
+- 공공 API 호출 한도는 기능별 하루 10,000건(개발계정)이다. 부산 3종 서비스는 이용허락범위 제한이 없다(SRS §2.5). 모든 장소·이미지에 `license`와 원본 링크를 저장하고 표시한다.
+- 외부 API에 장애가 나면 DB·캐시 데이터로 응답하고 "최신 정보 아님"을 표시한다(NFR-003, AC-006). 테스트에서는 외부 API를 mock으로 대체한다.
+
+## 작업 순서
+0. 뼈대: config 로더, `/api/health`, `db/schema.sql`, `docker-compose.yml`, requirements.txt. 빈 파일은 미리 만들지 않는다.
+1. 데이터: 부산 3종 API 샘플로 필드 매핑 → DataPipeline(upsert, ingest_log) → 텍스트 임베딩 → Chroma
+2. 검색·코스: SearchService, Scorer, RoutePlanner, 직선거리 추정 (pytest: 무작위 100회 평균보다 짧음, 3연속 금지)
+3. 에이전트: LLMClient(Gemini), QueryParser, 도구 레지스트리, LangGraph(6회 제한), ResponseBuilder+verify_places, SessionStore, 도구 폴백
+4. API·UI: API-001~008, 요청 한도, Streamlit + 카카오맵, 출처·기상청 표기
+5. 사진: 이미지 수집(이용 조건 확인), CLIP, τ 판정, VLM 폴백, Top-5 평가
+
+미결: 텍스트 임베딩·CLIP 모델(PoC), TourAPI 키·엔드포인트 없음(이미지 출처는 부산명소 API 필드로 확인), 중기예보 엔드포인트 없음, 운영시간 형식, indoor 추정 규칙.
+
+## GitHub 규칙
+- `main` 직접 푸시 금지. `feature/<기능>` 브랜치 → PR → 리뷰 1명 + CI(ruff, pytest, gitleaks).
+- 커밋 접두어 `feat:` `fix:` `docs:` `test:`. PR 본문에 관련 FR/이슈 ID를 적는다.
