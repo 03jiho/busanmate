@@ -127,6 +127,13 @@ ADR 요약: 001 계층형 모놀리식 API · 002 RAG(속성 필터+벡터) + `[
 - Chroma는 서버와 클라이언트 모두 1.5.8이다(0.6.x는 numpy<2를 요구해 pandas·Streamlit과 충돌).
 - 실행: `docker compose up -d db vector` 후 `python -m pipeline.run [busan_attraction ...]`. 결과는 `ingest_log`에 남는다. 로그에는 serviceKey가 섞이지 않게 오류 종류만 남긴다(`pipeline/run.py:_safe`).
 
+## 검색·코스 (2단계 결정, 2026-11-04)
+- **이동수단은 도보·택시만 쓴다.** 버스·대중교통은 카카오 API가 없고 추정 오차가 커서 제외했다. `mode`는 `auto`(기본: 보정 거리 ≤ `walk_max_km` 1.5km면 도보, 넘으면 택시) / `walk` / `taxi`다. 코스 계획은 모두 추정식(`services/route.py`)으로 하고, 택시 구간의 실측 시간과 요금은 화면 표시 시점에 카카오 자동차 길찾기로 조회한다(3단계 MapTool, 저장·캐시 안 함).
+- `services/search.py`: `Conditions` dataclass + `search(cond)`. Chroma에서 metadata where(gu·category·indoor)로 거른 뒤 PG에서 활성 행만 붙인다. 후보 수는 `candidates_n × 일수`다. 후보가 부족하면 indoor → gu 순서로 조건을 풀고 안내문을 붙인다(open_hours 필터는 운영시간 파싱 전이라 아직 없음).
+- `services/planner.py`: `score` → `select`(λ 다양성) → `best_order`(순열 전수, 같은 분류 3연속 금지) → 가용 시간 초과 시 최저점 제거. `dist` 항은 후보 전체 중심이 아니라 **유사도 1위 장소(앵커)에서의 거리**로 잰다. 하루 장소는 앵커 반경(도보 `walk_radius_km` 2.5, 그 외 `day_radius_km` 8) 안에서 고른다.
+- 다일 일정: 점수 상위(필요 수 × 2)를 k-means로 나눈다(초기 중심은 상위 절반에서만). 그다음 각 그룹 1위 장소 반경 안의 남은 후보를 보태고, 강수확률이 높은 날에 실내 비율이 높은 그룹을 배정한다. 일정 전체에서 장소 중복은 없다.
+- `build_course` 출력: `{"days": [{"day", "rain_prob", "items": [{order, place_id, name, category, gu, lat, lng, reason(None, 3단계 ResponseBuilder가 채움), leg_to_next{mode, minutes, meters, estimated}}]}], "notices": [...]}`.
+
 ## 작업 순서
 0. 뼈대: config 로더, `/api/health`, `db/schema.sql`, `docker-compose.yml`, requirements.txt. 빈 파일은 미리 만들지 않는다.
 1. 데이터: 부산 3종 API 샘플로 필드 매핑 → DataPipeline(upsert, ingest_log) → 텍스트 임베딩 → Chroma
