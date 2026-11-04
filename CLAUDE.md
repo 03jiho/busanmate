@@ -96,6 +96,9 @@ ADR 요약: 001 계층형 모놀리식 API · 002 RAG(속성 필터+벡터) + `[
 | `LLM_PROVIDER` | LLMClient 구현 선택 (기본 gemini) |
 | `GEMINI_API_KEY` | Gemini API |
 | `ADMIN_TOKEN` | 관리자 API(`X-Admin-Token`) |
+| `POSTGRES_PASSWORD` | docker-compose PostgreSQL 비밀번호 (api에는 `DATABASE_URL`로 주입) |
+
+설정은 `settings.py`로 읽는다: `config()`는 config.yaml, `secret(NAME)`은 환경변수(없으면 이름만 담은 오류). 실행은 `uvicorn api.main:app --reload`, `streamlit run ui/app.py`, `pytest`.
 
 ### 비밀값 규칙 (절대)
 - 키·토큰 **값**을 코드, 테스트, 로그, 커밋, 문서, 채팅 출력에 절대 쓰지 않는다. 값은 런타임에 `.env`(환경변수)에서만 읽는다.

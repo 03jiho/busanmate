@@ -1,0 +1,71 @@
+# BusanMate 설정 (SDD §10.3). 모든 수치는 초안 값이며 평가 결과를 보고 조정한다.
+# 비밀값은 여기에 두지 않는다 -> .env
+
+llm:
+  provider_env: LLM_PROVIDER        # 실제 제공자는 .env의 LLM_PROVIDER (기본 gemini)
+  model: gemini-2.5-flash           # 초안: 무료 등급에서 쓸 수 있는 모델로 확정할 것
+  vlm_model: gemini-2.5-flash
+  timeout_s: 20
+  cache_ttl_s: 86400                # 응답 캐시 (이동시간은 캐시 대상 아님, ADR-008)
+
+embedding:
+  text_model: null                  # 미정 (SDD §10.4, PoC 후 확정)
+  image_model: null                 # CLIP 계열, 미정
+
+search:                             # COMP-05, FR-002
+  candidates_n: 30
+  min_candidates: 2
+  relax_order: [open_hours, indoor, gu]
+
+score:                              # COMP-06, S(p) = w1·sim + w2·pref + w3·weather − w4·dist
+  w_sim: 0.4
+  w_pref: 0.3
+  w_weather: 0.2
+  w_dist: 0.1
+  diversity_penalty: 0.1            # λ, 같은 분류가 이미 선택됐을 때
+  weather_neutral: 0.5              # 예보 없음
+
+course:                             # COMP-06, FR-006, FR-014
+  places_per_day_min: 2
+  places_per_day_max: 6
+  default_available_hours: 9
+  max_days: 3
+  default_stay_min: 60              # 초안: 장소당 평균 체류
+  max_same_category_run: 2          # 같은 분류 3곳 연속 금지
+
+weather:                            # COMP-07, FR-004
+  rain_prob_threshold: 60
+  cache_ttl_s: 3600
+  source_label: "출처: 기상청 (공공누리 제1유형)"
+
+travel:                             # COMP-07, FR-007. 이동시간은 저장·캐시하지 않는다
+  detour_factor:                    # 직선거리 × 구간 보정계수
+    same_gu: 1.3
+    adjacent_gu: 1.5
+    sea_or_bridge: 1.8
+  speed_kmh:                        # 초안: 추정용 평균 속도
+    walk: 4.0
+    transit: 15.0
+    car: 25.0
+
+image:                              # COMP-08, FR-008·009
+  max_bytes: 10485760               # 10MB
+  allowed_types: [image/jpeg, image/png]
+  match_threshold: 0.80             # τ
+  top_images: 10
+  result_count: 5
+
+agent:                              # COMP-03
+  max_tool_calls_per_turn: 6
+  recent_turns: 6                   # 초안: 세션에 보관할 최근 대화 턴 수
+
+session:                            # COMP-10
+  ttl_s: 7200
+
+api:                                # COMP-02
+  rate_limit_per_min: 20
+  max_message_chars: 500            # 초안: 질의 길이 제한
+
+tools:
+  timeout_s: 3
+  max_retries: 3                    # 수집 소스 실패 시 (ERR-008)
