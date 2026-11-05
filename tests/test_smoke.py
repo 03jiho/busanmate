@@ -5,8 +5,9 @@ import settings
 from api.main import app
 
 
-def test_health():  # API-008
-    assert TestClient(app).get("/api/health").json() == {"status": "ok"}
+def test_health():  # API-008: DB·벡터 상태를 함께 돌려준다
+    body = TestClient(app).get("/api/health").json()
+    assert body["status"] in ("ok", "degraded") and {"db", "vector"} <= set(body)
 
 
 def test_config_has_draft_values():

@@ -45,23 +45,28 @@ class GeminiClient:
         self.client = genai.Client(api_key=secret("GEMINI_API_KEY"),
                                    http_options=types.HttpOptions(timeout=self.cfg["timeout_s"] * 1000))
         self._cache: dict[str, tuple[float, dict]] = {}
+        self._down_until = 0.0
 
     def _generate(self, contents, conf: types.GenerateContentConfig):
+        # 모든 모델이 방금 실패했으면 잠시 바로 실패시켜 규칙 기반 대체로 빨리 넘어가게 한다 (AI-REQ-02, NFR-001)
+        if time.time() < self._down_until:
+            raise RuntimeError("LLM 일시 장애로 호출을 건너뜀")
         last = None
         for model in self.cfg["models"]:
             t = time.time()
             try:
                 r = self.client.models.generate_content(model=model, contents=contents, config=conf)
-            except errors.APIError as e:
-                if e.code in (429, 500, 503, 504):
-                    log.warning("llm %s 실패 %s, 다음 모델 시도", model, e.code)
-                    last = e
-                    continue
-                raise
+            except Exception as e:  # 429·5xx·타임아웃·연결 오류는 다음 모델로, 그 밖의 4xx(요청 오류)는 그대로 올린다
+                if isinstance(e, errors.APIError) and e.code not in (429, 500, 503, 504):
+                    raise
+                log.warning("llm %s 실패 %s, 다음 모델 시도", model, getattr(e, "code", type(e).__name__))
+                last = e
+                continue
             u = r.usage_metadata
             log.info("llm model=%s in=%s out=%s ms=%d", model, u and u.prompt_token_count,
                      u and u.candidates_token_count, (time.time() - t) * 1000)  # 프롬프트 원문은 남기지 않는다
             return r
+        self._down_until = time.time() + self.cfg["cooldown_s"]
         raise last
 
     def chat(self, system, messages, tools=None) -> LLMReply:
