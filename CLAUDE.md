@@ -134,6 +134,17 @@ ADR 요약: 001 계층형 모놀리식 API · 002 RAG(속성 필터+벡터) + `[
 - 다일 일정: 점수 상위(필요 수 × 2)를 k-means로 나눈다(초기 중심은 상위 절반에서만). 그다음 각 그룹 1위 장소 반경 안의 남은 후보를 보태고, 강수확률이 높은 날에 실내 비율이 높은 그룹을 배정한다. 일정 전체에서 장소 중복은 없다.
 - `build_course` 출력: `{"days": [{"day", "rain_prob", "items": [{order, place_id, name, category, gu, lat, lng, reason(None, 3단계 ResponseBuilder가 채움), leg_to_next{mode, minutes, meters, estimated}}]}], "notices": [...]}`.
 
+## 에이전트 (3단계 결정, 2026-11-04)
+- **LLM 모델:** `gemini-2.5-flash`는 신규 사용자에게 제공되지 않는다. config `llm.models` 순서대로 시도하고(`gemini-3.5-flash-lite` → `3.5-flash` → `3.8-flash`), 429·5xx면 다음 모델로 넘어간다(`services/llm.py`). 에이전트는 `LLMClient` 프로토콜(`chat`, `json`)에만 의존하고, `get_llm()`이 `LLM_PROVIDER`로 구현을 고른다.
+- **Gemini 주의:** 함수 결과 메시지의 role은 `user`여야 한다(`tool`이면 400 오류). 모델 응답은 thought signature 보존을 위해 원본 `Content`를 그대로 되돌려 보낸다.
+- **흐름 (LangGraph, `agent/orchestrator.py`):** parse → (되묻기·잡담이면 respond) → agent ⇄ tools(턴당 6회) → respond. 의도의 마지막 단계 도구(코스·수정은 `get_route_times`, 검색은 `search_places`)를 마치면 LLM에 되묻지 않고 바로 응답한다. LLM이 실패하면 `DEFAULT_PLAN` 순서로 도구를 실행한다(§7.4). 진입점은 `handle_chat(session_id, message)`이다.
+- **도구:** `tools/` 아래 파일에 `@register`만 붙이면 자동 등록된다(`tools/__init__.py`). `BaseTool.call`은 시간 제한과 예외를 처리해 fallback으로 넘긴다. 도구는 상태(ctx)를 직접 고치지 않고 `ToolResult.updates`로 돌려준다.
+- **QueryParser:** 코스 요청인데 날짜가 없으면 되묻는다. 원문을 세션 `pending`에 두었다가 다음 답과 이어 붙여 다시 해석한다. 지역이 없으면 부산 전체로 본다(서비스가 부산 전용이라 SRS의 "지역 또는 날짜"는 날짜만 필수로 해석). LLM이 실패하면 규칙 기반으로 간이 추출한다.
+- **ResponseBuilder:** 장소 정보는 DB에서 다시 읽고, LLM에는 `[[id]]` 마커만 쓰게 한다. `verify_places`가 후보 밖 id가 든 문장을 지우고, 남은 마커는 DB 이름으로 바꾼다. 출처는 장소별 제공처, 링크, 이용 조건에 기상청과 축제 출처를 더한다. 마커를 이름으로 바꿀 때 조사가 어색해질 수 있다(예: "해운대과").
+- **날씨:** 단기예보(`getVilageFcst`), 시청 격자(98, 76) 하나로 본다. 9~21시 강수확률 최댓값을 그날 값으로 쓴다. 5일 뒤 날짜는 예보 범위 밖이라 반영하지 않는다(중기예보 엔드포인트 없음).
+- **카카오:** 택시 구간만 실측(시간·거리·요금)하고 저장·캐시하지 않는다. 결과 코드 102/103(출발지·도착지 주변 도로 없음, 산·계곡)은 추정치로 대체한다.
+- **실측 응답시간:** 1일 코스 약 12초, 2박 3일 약 10~27초(LLM 왕복 5~6회, 무료 등급 429가 나면 늘어남).
+
 ## 작업 순서
 0. 뼈대: config 로더, `/api/health`, `db/schema.sql`, `docker-compose.yml`, requirements.txt. 빈 파일은 미리 만들지 않는다.
 1. 데이터: 부산 3종 API 샘플로 필드 매핑 → DataPipeline(upsert, ingest_log) → 텍스트 임베딩 → Chroma

@@ -1,12 +1,13 @@
 # BusanMate 설정 (SDD §10.3). 모든 수치는 초안 값이며 평가 결과를 보고 조정한다.
 # 비밀값은 여기에 두지 않는다 -> .env
 
-llm:
-  provider_env: LLM_PROVIDER        # 실제 제공자는 .env의 LLM_PROVIDER (기본 gemini)
-  model: gemini-2.5-flash           # 초안: 무료 등급에서 쓸 수 있는 모델로 확정할 것
-  vlm_model: gemini-2.5-flash
+llm:                                # 제공자는 .env의 LLM_PROVIDER (기본 gemini)
+  # 앞에서부터 시도, 503(수요 과다)·429(한도)면 다음 모델로 (2026-11-04 확인: 2.5-flash는 신규 사용자 불가)
+  models: [gemini-3.5-flash-lite, gemini-3.5-flash, gemini-3.8-flash]
+  temperature: 0.2
   timeout_s: 20
-  cache_ttl_s: 86400                # 응답 캐시 (이동시간은 캐시 대상 아님, ADR-008)
+  cache_ttl_s: 86400                # 조건 추출 응답 캐시 (이동시간은 캐시 대상 아님, ADR-008)
+  prompt_version: v1                # agent/prompts/<이름>_<버전>.md
 
 embedding:
   text_provider: gemini             # 결정(2026-11-04): Gemini 임베딩 API
@@ -93,7 +94,14 @@ preferences:                        # FR-005 선호 테마 → 가산점을 줄 
 weather:                            # COMP-07, FR-004
   rain_prob_threshold: 60
   cache_ttl_s: 3600
-  source_label: "출처: 기상청 (공공누리 제1유형)"
+  source_label: 기상청 단기예보 (공공데이터포털)
+  license: 공공누리 제1유형 (출처 표시)
+  operation: getVilageFcst          # KMA_FORECAST_URL 서비스 경로 뒤에 붙인다
+  grid: {nx: 98, ny: 76}            # ponytail: 부산 전체를 시청 격자 하나로 본다, 구별 차이가 크면 구별 격자로
+  day_hours: [9, 21]                # 이 시간대 강수확률의 최댓값을 그날 값으로
+
+kakao:
+  timeout_s: 5                      # 택시 구간 실측 (KAKAO_MOBILITY_DIRECTIONS_URL, 자동차 경로만)
 
 travel:                             # COMP-07, FR-007. 이동시간은 저장·캐시하지 않는다
   # 이동수단은 도보·택시만 (결정 2026-11-04). mode=auto면 구간 거리로 자동 선택

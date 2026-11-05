@@ -127,7 +127,7 @@ def kmeans(points: list[dict], k: int, iters: int = 20) -> list[list[dict]]:
     return groups
 
 
-def _items(seq: list[dict], mode: str) -> list[dict]:
+def items_for(seq: list[dict], mode: str) -> list[dict]:
     return [{"order": i + 1, "place_id": p["place_id"], "name": p["name"], "category": p["category"],
              "gu": p["gu"], "lat": p["lat"], "lng": p["lng"], "reason": None,
              "leg_to_next": estimate_leg(p, seq[i + 1], mode) if i + 1 < len(seq) else None}
@@ -188,5 +188,5 @@ def build_course(cands: list[dict], cond, rain_by_day: list[float | None] | None
         notices += [f"{d + 1}일차: {m}" if days > 1 else m for m in n]
         if rain[d] is not None and rain[d] >= config()["weather"]["rain_prob_threshold"]:
             notices.append(f"{d + 1}일차 강수확률 {rain[d]:.0f}%라 실내 장소를 우선했습니다.")
-        out_days.append({"day": d + 1, "rain_prob": rain[d], "items": _items(seq, cond.mode)})
+        out_days.append({"day": d + 1, "rain_prob": rain[d], "items": items_for(seq, cond.mode)})
     return {"days": out_days, "notices": notices}
