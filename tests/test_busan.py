@@ -2,6 +2,7 @@ from datetime import date
 
 import pytest
 
+from pipeline import busan
 from pipeline.busan import classify, clean_name, parse_period, to_festival, to_place
 
 ROW = {"UC_SEQ": 1, "MAIN_TITLE": "국립해양박물관(한,영,중간,중번,일)", "GUGUN_NM": "영도구",
@@ -43,6 +44,26 @@ def test_to_place():
     assert p["tel"] is None and p["license"]
     assert to_place({**ROW, "LAT": ""}, "busan_attraction") is None  # 좌표 없으면 제외
     assert to_place(ROW, "busan_food")["category"] == "음식점"
+
+
+@pytest.mark.parametrize("missing", ["MAIN_TITLE", "LAT", "LNG", "GUGUN_NM"])
+def test_clean_drops_rows_missing_required(missing):
+    from pipeline.run import clean
+    assert clean([ROW, {**ROW, "UC_SEQ": 2, missing: ""}], "busan_attraction") == [to_place(ROW, "busan_attraction")]
+
+
+def test_dedup_keeps_last_per_source_id():
+    from pipeline.run import dedup
+    a, b = to_place(ROW, "busan_attraction"), to_place({**ROW, "TITLE": "새 설명"}, "busan_attraction")
+    assert dedup([a, b]) == [b]
+
+
+def test_seed_csv_is_usable():
+    from pipeline.run import clean, dedup
+    places = [p for s in ("busan_attraction", "busan_food") for p in dedup(clean(busan.load_seed(s), s))]
+    fests = clean(busan.load_seed("busan_festival"), "busan_festival")
+    assert 30 <= len(places) <= 50 and len(fests) >= 1
+    assert all(p["license"] and -90 < p["lat"] < 90 for p in places)
 
 
 def test_to_festival():

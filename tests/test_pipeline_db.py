@@ -64,3 +64,14 @@ def test_rerun_is_idempotent(env):
     assert _count() == (3, 2) and len(coll.ids) == 2
     with db.connect() as conn:
         assert conn.execute("SELECT count(*) FROM ingest_log WHERE source = %s", (SRC,)).fetchone()[0] == 3
+
+
+def test_seed_mode_is_idempotent_and_never_deactivates(env, monkeypatch):
+    seed = pipeline.busan.load_seed("busan_attraction")  # 실제 시드 CSV 행을 테스트 소스로 적재
+    monkeypatch.setattr(pipeline.busan, "load_seed", lambda source: seed)
+    first = pipeline.run([SRC], seed=True)[0]
+    assert first["status"] == "ok" and first["new"] == len(seed) and "시드" in first["message"]
+    assert pipeline.run([SRC], seed=True)[0]["new"] == 0
+    seed.pop()  # 시드는 일부만 담고 있으므로 빠진 행이 있어도 비활성화하지 않는다
+    pipeline.run([SRC], seed=True)
+    assert _count() == (len(seed) + 1, len(seed) + 1)

@@ -1,6 +1,8 @@
 """부산 명소·맛집·축제 API 수집과 DB 행 변환 (COMP-12, DATA-01·03)."""
+import csv
 import re
 from datetime import date
+from pathlib import Path
 
 import requests
 
@@ -27,6 +29,13 @@ def fetch(source: str) -> list[dict]:
         if len(items) >= body["totalCount"] or not body.get("item"):
             return items
         page += 1
+
+
+def load_seed(source: str) -> list[dict]:
+    """API 장애·오프라인 시연용 시드 CSV(data/seed/). API 원본과 같은 필드 이름이고 source 열로 소스를 나눈다."""
+    path = Path(__file__).resolve().parent.parent / config()["ingest"]["seed_file"]
+    with open(path, encoding="utf-8", newline="") as f:
+        return [{k: v for k, v in row.items() if k != "source"} for row in csv.DictReader(f) if row["source"] == source]
 
 
 def clean_name(name: str) -> str:

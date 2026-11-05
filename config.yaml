@@ -46,6 +46,7 @@ sources:
 ingest:
   page_size: 1000
   timeout_s: 60
+  seed_file: data/seed/busan_seed.csv   # python -m pipeline.run --seed (API 원본 행 48건, 2026-11-05 수집)
 
 # 분류·실내 여부 추정 (원본에 분류 필드가 없음). 이름에 대해 위에서부터 첫 매치.
 # names: 정확히 일치, keywords: 포함되면 매치, suffixes: 이름(끝의 "부산" 제외)이 그 글자로 끝나면 매치.

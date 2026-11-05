@@ -126,6 +126,9 @@ ADR 요약: 001 계층형 모놀리식 API · 002 RAG(속성 필터+벡터) + `[
 - 원본에서 사라진 장소는 `is_active=FALSE`로 바꾸고 Chroma에서도 지운다. 응답이 비어 있으면 실패로 처리한다(전체가 비활성화되는 것을 막기 위해).
 - Chroma는 서버와 클라이언트 모두 1.5.8이다(0.6.x는 numpy<2를 요구해 pandas·Streamlit과 충돌).
 - 실행: `docker compose up -d db vector` 후 `python -m pipeline.run [busan_attraction ...]`. 결과는 `ingest_log`에 남는다. 로그에는 serviceKey가 섞이지 않게 오류 종류만 남긴다(`pipeline/run.py:_safe`).
+- 단계(`pipeline/run.py`): `collect`(API 또는 시드) → `clean`(필수값 없는 행 제외) → `dedup`(원본 id 기준) → `load_places`(바뀐 행만 upsert, 미커밋) → `deactivate` → `embed` → 커밋. 임베딩이 실패하면 DB도 롤백된다.
+- **시드 모드:** `python -m pipeline.run --seed`는 `data/seed/busan_seed.csv`(API 원본 행 48건: 명소 30, 맛집 12, 축제 6, 2026-11-05 수집)를 같은 경로로 적재한다. 일부 데이터라 비활성화 단계는 건너뛴다. API가 바뀌면 같은 방식으로 다시 뽑는다.
+- 2026-11-05 확인: 맛집 API가 536건으로 늘었다(적재는 471건). 다음 수집 때 신규로 들어간다.
 
 ## 검색·코스 (2단계 결정, 2026-11-04)
 - **이동수단은 도보·택시만 쓴다.** 버스·대중교통은 카카오 API가 없고 추정 오차가 커서 제외했다. `mode`는 `auto`(기본: 보정 거리 ≤ `walk_max_km` 1.5km면 도보, 넘으면 택시) / `walk` / `taxi`다. 코스 계획은 모두 추정식(`services/route.py`)으로 하고, 택시 구간의 실측 시간과 요금은 화면 표시 시점에 카카오 자동차 길찾기로 조회한다(3단계 MapTool, 저장·캐시 안 함).
