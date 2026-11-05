@@ -35,10 +35,14 @@ def env(monkeypatch):
     monkeypatch.setattr(pipeline.busan, "fetch", lambda source: rows)
     monkeypatch.setattr(pipeline.db, "collection", lambda name: coll)
     monkeypatch.setattr(pipeline, "embed_texts", lambda docs: calls.append(len(docs)) or [[0.0] * 3 for _ in docs])
+    monkeypatch.setattr(pipeline, "_embed_images", lambda: {"source": "place_image", "status": "ok", "new": 0,
+                                                            "updated": 0, "skipped": 0, "message": None})
+    with db.connect() as conn:
+        start = conn.execute("SELECT coalesce(max(log_id), 0) FROM ingest_log").fetchone()[0]
     yield rows, coll, calls
     with db.connect() as conn:
         conn.execute("DELETE FROM place WHERE source = %s", (SRC,))
-        conn.execute("DELETE FROM ingest_log WHERE source = %s", (SRC,))
+        conn.execute("DELETE FROM ingest_log WHERE log_id > %s AND source IN (%s, 'place_image')", (start, SRC))
 
 
 def _count():

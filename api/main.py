@@ -1,5 +1,5 @@
 """API 서버 (COMP-02, SDD §6). 실행: uvicorn api.main:app --reload
-요청 검증, 세션 식별, 관리자 토큰, 요청 한도, 오류 응답 표준화. API-002(사진)는 5단계."""
+요청 검증, 세션 식별, 관리자 토큰, 요청 한도, 오류 응답 표준화."""
 import hashlib
 import hmac
 import logging
@@ -8,9 +8,11 @@ import threading
 import time
 import uuid
 from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 from typing import Literal
 
-from fastapi import FastAPI, Header, Request
+from fastapi import FastAPI, File, Form, Header, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -21,10 +23,20 @@ from agent import session
 from agent.orchestrator import handle_chat
 from agent.query_parser import themes
 from pipeline import run as pipeline
+from services import image
 from settings import config, secret
 
 log = logging.getLogger("api")
-app = FastAPI(title="BusanMate API")
+
+
+@asynccontextmanager
+async def lifespan(app):
+    # CLIP 모델을 미리 불러 첫 사진 검색이 늦지 않게 한다 (NFR-002). 서버 시작은 막지 않는다
+    threading.Thread(target=image._clip, daemon=True).start()
+    yield
+
+
+app = FastAPI(title="BusanMate API", lifespan=lifespan)
 SESSION_ID = r"^[A-Za-z0-9_-]{8,64}$"
 
 
@@ -101,6 +113,19 @@ def chat(body: ChatIn):
     _rate_limit(body.session_id)
     log.info("chat session=%s", hashlib.sha256(body.session_id.encode()).hexdigest()[:10])
     return handle_chat(body.session_id, body.message.strip())
+
+
+# --- API-002 (FR-008, FR-009, NFR-006): 사진은 메모리에서만 처리하고 저장·로그하지 않는다 ---
+@app.post("/api/search/image")
+async def search_image(session_id: str = Form(pattern=SESSION_ID), file: UploadFile = File(...)):
+    _rate_limit(session_id)
+    data = await file.read(config()["image"]["max_bytes"] + 1)  # 한도+1까지만 읽어 초과 여부만 안다
+    await file.close()
+    log.info("image upload bytes=%d type=%s", len(data), file.content_type)  # ERR-003: 크기·형식만
+    try:
+        return await run_in_threadpool(image.search_by_image, data)
+    except image.ImageError as e:
+        raise ApiError(e.status, e.code, e.message)
 
 
 # --- API-003, 004 (FR-005) ---

@@ -4,12 +4,10 @@ import json
 import logging
 import re
 
-from psycopg.rows import dict_row
 
-import db
 from agent import prompt
 from services.llm import get_llm
-from settings import config
+from services.search import fetch_places, source_of
 
 log = logging.getLogger("agent")
 MARKER = re.compile(r"\[\[(\d+)\]\]")
@@ -68,21 +66,6 @@ def verify_places(text: str, allowed: dict[int, str]) -> tuple[str, list[int]]:
     return "".join(out).strip(), dropped
 
 
-def _places(ids: list[int]) -> dict[int, dict]:
-    """이름·좌표·출처는 항상 DB에서 다시 읽는다 (활성 행만)."""
-    if not ids:
-        return {}
-    with db.connect() as conn, conn.cursor(row_factory=dict_row) as cur:
-        cur.execute("SELECT place_id, source, name, category, gu, description, open_hours, url, license "
-                    "FROM place WHERE is_active AND place_id = ANY(%s)", (ids,))
-        return {r["place_id"]: r for r in cur.fetchall()}
-
-
-def _source(p: dict) -> dict:
-    return {"place_id": p["place_id"], "name": p["name"], "label": config()["sources"][p["source"]]["label"],
-            "url": p["url"], "license": p["license"]}
-
-
 def build_response(state: dict) -> dict:
     notices, intent = list(state.get("notices") or []), state.get("intent")
     if state.get("clarify"):
@@ -95,7 +78,7 @@ def build_response(state: dict) -> dict:
         ids = [i["place_id"] for d in course["days"] for i in d["items"]]
     else:
         course, ids = None, [p["place_id"] for p in (state.get("candidates") or [])[:5]]
-    places = _places(ids)
+    places = fetch_places(ids)
     # 검증에서 빠진(비활성) 장소는 코스에서도 뺀다
     if course:
         for d in course["days"]:
@@ -133,7 +116,7 @@ def build_response(state: dict) -> dict:
         for d in course["days"]:
             for item in d["items"]:
                 item["name"], item["reason"] = places[item["place_id"]]["name"], reasons.get(item["place_id"])
-    sources = [_source(places[i]) for i in ids] + list(state.get("sources") or [])
+    sources = [source_of(places[i]) for i in ids] + list(state.get("sources") or [])
     return {"answer": answer, "course": course, "sources": sources, "notices": notices,
-            "places": None if course else [{**_source(places[i]), "category": places[i]["category"],
+            "places": None if course else [{**source_of(places[i]), "category": places[i]["category"],
                                             "gu": places[i]["gu"], "reason": reasons.get(i)} for i in ids]}

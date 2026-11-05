@@ -136,7 +136,25 @@ def run(sources: list[str] | None = None) -> list[dict]:
                       "skipped": skipped, "message": message}
             log.info("%s", result)
             results.append(result)
+        if any(config()["sources"][r["source"]]["kind"] == "place" and r["status"] == "ok" for r in results):
+            result = _embed_images()
+            conn.execute("INSERT INTO ingest_log (source, new_cnt, updated_cnt, skipped_cnt, status, message) "
+                         "VALUES (%s, %s, 0, %s, %s, %s)",
+                         ("place_image", result["new"], result["skipped"], result["status"], result["message"]))
+            conn.commit()
+            log.info("%s", result)
+            results.append(result)
     return results
+
+
+def _embed_images() -> dict:
+    """새 장소 이미지를 CLIP으로 임베딩한다(DATA-06). torch가 무거워 필요할 때만 불러온다."""
+    try:
+        from pipeline.images import embed_pending
+        out = embed_pending()
+        return {"source": "place_image", "status": "ok", "updated": 0, "message": None, **out}
+    except Exception as e:
+        return {"source": "place_image", "status": "failed", "new": 0, "updated": 0, "skipped": 0, "message": _safe(e)}
 
 
 if __name__ == "__main__":

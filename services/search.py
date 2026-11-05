@@ -25,6 +25,20 @@ class Conditions:
     companion: str | None = None
 
 
+def fetch_places(ids: list[int]) -> dict[int, dict]:
+    """이름·좌표·출처는 응답 직전에 항상 DB에서 다시 읽는다 (활성 행만, FR-003·NFR-004)."""
+    if not ids:
+        return {}
+    with db.connect() as conn, conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(f"SELECT {', '.join(PLACE_FIELDS)} FROM place WHERE is_active AND place_id = ANY(%s)", (list(ids),))
+        return {r["place_id"]: r for r in cur.fetchall()}
+
+
+def source_of(p: dict) -> dict:
+    return {"place_id": p["place_id"], "name": p["name"], "label": config()["sources"][p["source"]]["label"],
+            "url": p["url"], "license": p["license"]}
+
+
 def _where(c: Conditions) -> dict | None:
     clauses = []
     if c.gu:

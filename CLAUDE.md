@@ -152,6 +152,13 @@ ADR 요약: 001 계층형 모놀리식 API · 002 RAG(속성 필터+벡터) + `[
 - **LLM 장애 대응:** 모든 모델이 실패(429·5xx·타임아웃)하면 `cooldown_s`(60초) 동안 LLM을 건너뛰고 규칙 기반 대체로 바로 처리한다(`services/llm.py`). 타임아웃은 10초다.
 - **로컬 실행:** 미리보기 설정 `busanmate-api`(8000), `busanmate-ui`(8501)는 `GitHub/.claude/launch.json`에 있다. 이 PC는 스마트 앱 컨트롤을 사용자가 꺼서 psycopg DLL이 로드된다(켜져 있던 동안에는 차단됐음).
 
+## 사진 탐색 (5단계, 2026-11-05)
+- **모델:** 로컬 open_clip `ViT-B-32` / `laion2b_s34b_b79k`(config `embedding.image_*`)를 쓴다. PyTorch는 CPU 빌드다. 가중치는 첫 사용 때 HuggingFace에서 받는다. API 서버는 시작할 때(lifespan) 모델을 미리 불러온다.
+- **색인:** `pipeline/images.py`가 `place_image` 중 `embedding_id`가 비어 있는 활성 장소 이미지를 내려받아 Chroma `place_image`(id=image_id, 메타 place_id)에 넣는다. `pipeline.run` 끝에서도 자동으로 돌고, `ingest_log`에는 source `place_image`로 남는다. 현재 636장(1장은 내려받기 실패).
+- **`services/image.py`:** 매직바이트·10MB 검사(413/415) → CLIP → 상위 10장을 place_id별 최대 유사도로 묶는다(`rank_places`). 최고 유사도 ≥ τ면 `recognized`, 아니면 `similar`(Gemini `describe_image` 장면 설명 → 텍스트 검색 5곳). VLM이 실패하면 CLIP 상위 5곳을 그대로 쓴다. 업로드 사진은 메모리에서만 처리하고, 로그에는 크기·형식만 남긴다.
+- **API-002** `POST /api/search/image`(multipart: session_id, file). 따뜻한 상태에서 약 3초 걸린다. UI에는 사이드바 "사진으로 찾기"와, 결과마다 "코스에 넣기" 버튼(채팅으로 추가 요청)이 있다.
+- **평가:** `python -m eval.photo_eval <폴더>`(사진과 `labels.csv`(file,place_id), 색인에 없는 사진) → Top-1·Top-5·인식률. `--sanity`는 색인 원본의 썸네일이라 연결 점검용이다(Top-5 100%, 인식률 87.5%). 거의 같은 이미지도 12.5%가 τ=0.80 미만이었으므로, 실제 평가 사진으로 τ를 낮출지 검토해야 한다.
+
 ## 작업 순서
 0. 뼈대: config 로더, `/api/health`, `db/schema.sql`, `docker-compose.yml`, requirements.txt. 빈 파일은 미리 만들지 않는다.
 1. 데이터: 부산 3종 API 샘플로 필드 매핑 → DataPipeline(upsert, ingest_log) → 텍스트 임베딩 → Chroma

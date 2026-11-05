@@ -18,7 +18,9 @@ embedding:
   batch_chars: 20000                # 무료 등급 분당 30,000토큰 한도 → 배치당 글자 수 상한 (한글 1자 ≈ 1토큰 이하로 가정)
   batch_interval_s: 61              # 배치 사이 대기 (최초 적재만 수 분, 이후엔 바뀐 장소만)
   max_doc_chars: 1500               # 임베딩 문서 = 이름 + 설명 앞부분
-  image_model: null                 # CLIP 계열, 미정 (5단계)
+  image_model: ViT-B-32             # 결정(2026-11-05): 로컬 open_clip
+  image_pretrained: laion2b_s34b_b79k
+  image_batch_size: 32
 
 # 수집 소스 (COMP-12, DATA-01·03). url_env의 서비스 경로 뒤에 operation을 붙여 호출
 sources:
@@ -121,9 +123,11 @@ travel:                             # COMP-07, FR-007. 이동시간은 저장·�
 image:                              # COMP-08, FR-008·009
   max_bytes: 10485760               # 10MB
   allowed_types: [image/jpeg, image/png]
-  match_threshold: 0.80             # τ
+  match_threshold: 0.80             # τ: 최고 유사도가 이 이상이면 '인식', 미만이면 VLM 장면 설명으로 유사 분위기 추천
   top_images: 10
   result_count: 5
+  download_timeout_s: 10            # 수집 시 장소 이미지 내려받기
+  download_max_bytes: 10485760
 
 agent:                              # COMP-03
   max_tool_calls_per_turn: 6

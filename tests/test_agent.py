@@ -44,7 +44,7 @@ def fake(monkeypatch):
     monkeypatch.setattr(map_tool, "kakao_leg", lambda a, b: {"mode": "taxi", "minutes": 9, "meters": 3000,
                                                              "estimated": False, "taxi_fare": 5000})
     monkeypatch.setattr(REGISTRY["get_festivals"], "run", lambda args, ctx: ToolResult(ok=True, updates={"festivals": []}))
-    monkeypatch.setattr(response, "_places", lambda ids: {c["place_id"]: c for c in CANDS if c["place_id"] in ids})
+    monkeypatch.setattr(response, "fetch_places", lambda ids: {c["place_id"]: c for c in CANDS if c["place_id"] in ids})
 
     def use(llm):
         for m in (query_parser, response, orchestrator):

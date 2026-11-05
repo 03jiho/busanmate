@@ -38,6 +38,9 @@ class LLMClient(Protocol):
     def json(self, system: str, prompt: str, schema: dict) -> dict:
         """schema를 따르는 JSON 응답. 같은 입력은 캐시에서 돌려준다."""
 
+    def describe_image(self, image: bytes, mime: str, prompt: str) -> str:
+        """VLM(SDD §7.2 VLMClient): 이미지를 글로 묘사한다. 이미지는 저장·캐시하지 않는다."""
+
 
 class GeminiClient:
     def __init__(self):
@@ -106,6 +109,11 @@ class GeminiClient:
         out = json.loads(r.text)
         self._cache[key] = (time.time(), out)  # ponytail: 프로세스 메모리 캐시, 여러 워커면 Redis 등으로
         return out
+
+    def describe_image(self, image, mime, prompt) -> str:
+        r = self._generate([types.Part.from_bytes(data=image, mime_type=mime), prompt],
+                           types.GenerateContentConfig(temperature=self.cfg["temperature"]))
+        return (r.text or "").strip()
 
 
 @lru_cache

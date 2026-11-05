@@ -78,6 +78,37 @@ def leg_text(leg: dict) -> str:
     return f"🚕 택시 {leg['minutes']}분{fare}"
 
 
+def show_photo_result(r: dict, key: str) -> None:
+    """API-002 결과: 인식된 장소 또는 비슷한 분위기의 장소, 지도, 출처, 코스에 넣기."""
+    if "error" in r:
+        st.error(r["error"]["message"])
+        return
+    st.markdown("**이 사진은 이곳으로 보여요.**" if r["mode"] == "recognized"
+                else "**딱 맞는 명소는 찾지 못해, 비슷한 분위기의 부산 장소를 골랐어요.**")
+    if r.get("description"):
+        st.caption(f"사진 장면: {r['description']}")
+    for n in r.get("notices") or []:
+        st.caption(f"ℹ️ {n}")
+    if not r["matches"]:
+        return
+    left, right = st.columns([3, 2])
+    with left:
+        items = [{**m, "order": i + 1, "leg_to_next": None} for i, m in enumerate(r["matches"])]
+        if KAKAO_JS_KEY:
+            components.html(kakao_map(items), height=390)
+        else:
+            st.map([{"lat": m["lat"], "lon": m["lng"]} for m in r["matches"]])
+    with right:
+        for i, m in enumerate(r["matches"]):
+            st.markdown(f"**{i + 1}. {m['name']}** · {m['category']} · {m['gu']} (유사도 {m['similarity']:.0%})")
+            if st.button("코스에 넣기", key=f"{key}-{m['place_id']}"):
+                ss.queued = f"{m['name']}을(를) 코스에 추가해줘"
+    with st.expander(f"출처 {len(r['sources'])}건"):
+        for s in r["sources"]:
+            link = f" ([원본]({s['url']}))" if s.get("url") else ""
+            st.markdown(f"- {s['name']} — {s['label']}{link} · {s['license']}")
+
+
 def show_result(r: dict) -> None:
     if "error" in r:
         st.error(r["error"]["message"])
@@ -136,6 +167,11 @@ with st.sidebar:
         if st.button(ex, use_container_width=True):
             ss.queued = ex
 
+    st.header("사진으로 찾기")
+    photo = st.file_uploader("부산 명소 사진 (JPG·PNG, 10MB 이하)", type=["jpg", "jpeg", "png"])
+    if photo and st.button("이 사진과 비슷한 곳 찾기", use_container_width=True):
+        ss.queued_photo = (photo.name, photo.getvalue(), photo.type)  # 브라우저 세션 메모리에만, 저장하지 않는다
+
     with st.expander("관리자"):
         token = st.text_input("관리자 토큰", type="password")
         if st.button("데이터 수집 실행", disabled=not token):
@@ -149,12 +185,25 @@ with st.sidebar:
 st.title("🌊 BusanMate")
 st.caption("부산 맞춤 여행코스 안내 — 공공데이터에 있는 장소만, 출처와 함께 추천합니다.")
 
-for h in ss.history:
+for n, h in enumerate(ss.history):
     with st.chat_message(h["role"]):
         if h["role"] == "user":
             st.markdown(h["content"])
+        elif h.get("photo"):
+            show_photo_result(h["result"], key=f"h{n}")
         else:
             show_result(h["result"])
+
+if ss.get("queued_photo"):  # 사진 탐색 (UC-003)
+    name, data, mime = ss.pop("queued_photo")
+    with st.chat_message("user"):
+        st.markdown(f"📷 사진으로 찾기: {name}")
+    with st.chat_message("assistant"):
+        with st.spinner("사진과 비슷한 장소를 찾는 중입니다…"):
+            result = api("POST", "/api/search/image", data={"session_id": ss.sid}, files={"file": (name, data, mime)})
+        show_photo_result(result, key=f"h{len(ss.history) + 1}")
+    ss.history += [{"role": "user", "content": f"📷 사진으로 찾기: {name}"},
+                   {"role": "assistant", "result": result, "photo": True}]
 
 message = st.chat_input("예: 이번 토요일 부모님과 걸어서 돌기 좋은 바다 코스") or ss.pop("queued", None)
 if message:  # 질문은 바로 보이고, 답은 기다리는 동안 스피너
