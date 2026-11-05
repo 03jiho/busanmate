@@ -7,7 +7,9 @@ import pytest
 from agent import orchestrator, query_parser, response, session
 from agent.response import verify_places
 from services.llm import LLMReply, ToolCall
-from tools import map as map_tool, places as places_tool, weather
+from tools import map as map_tool
+from tools import places as places_tool
+from tools import weather
 from tools.base import REGISTRY, ToolResult
 
 TODAY = date(2026, 11, 4)

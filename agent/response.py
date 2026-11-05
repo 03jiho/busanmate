@@ -4,7 +4,6 @@ import json
 import logging
 import re
 
-
 from agent import prompt
 from services.llm import get_llm
 from services.search import fetch_places, source_of
