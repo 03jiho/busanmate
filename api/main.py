@@ -11,10 +11,13 @@ from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from typing import Literal
 
+import httpx
+import requests
 from fastapi import FastAPI, File, Form, Header, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from google.genai import errors as genai_errors
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException
 
@@ -63,6 +66,21 @@ async def _invalid(request, e: RequestValidationError):
 @app.exception_handler(HTTPException)
 async def _http(request, e: HTTPException):
     return _error(e.status_code, "NOT_FOUND" if e.status_code == 404 else "HTTP_ERROR", str(e.detail))
+
+
+@app.exception_handler(requests.Timeout)
+@app.exception_handler(httpx.TimeoutException)
+async def _upstream_timeout(request, e: Exception):
+    log.warning("외부 API 시간 초과 path=%s %s", request.url.path, type(e).__name__)  # ERR-005·006: URL(키 포함)은 남기지 않는다
+    return _error(504, "UPSTREAM_TIMEOUT", "외부 서비스 응답이 늦어 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.")
+
+
+@app.exception_handler(requests.RequestException)
+@app.exception_handler(httpx.HTTPError)
+@app.exception_handler(genai_errors.APIError)
+async def _upstream_error(request, e: Exception):
+    log.warning("외부 API 오류 path=%s %s", request.url.path, type(e).__name__)
+    return _error(502, "UPSTREAM_ERROR", "외부 서비스 오류로 최신 정보를 가져오지 못했습니다. 잠시 후 다시 시도해 주세요.")
 
 
 @app.exception_handler(Exception)

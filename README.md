@@ -23,27 +23,40 @@
 
 ## 실행
 
-1. 키를 준비합니다. `.env.example`을 `.env`로 복사하고 값을 채웁니다(공공데이터포털, 카카오, Gemini, 관리자 토큰, DB 비밀번호). `.env`는 커밋하지 않습니다.
-2. 의존성을 설치합니다.
+필요한 것: Docker(Docker Compose 포함), 공공데이터포털·카카오·Gemini API 키.
+
+1. 키를 준비합니다. `.env.example`을 `.env`로 복사하고 값을 채웁니다(공공데이터포털, 카카오, Gemini, 관리자 토큰, DB 비밀번호 `POSTGRES_PASSWORD`). `.env`는 커밋하지 않습니다.
+2. 한 번에 띄웁니다. ui(8501), api(8000), db(PostgreSQL, 5432), vector(Chroma, 8001)가 함께 뜨고, DB 스키마는 처음 뜰 때 자동으로 만들어집니다. 첫 빌드는 PyTorch 때문에 몇 분 걸립니다.
    ```bash
-   python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
+   docker compose up -d --build
    ```
-3. DB와 벡터 저장소를 띄웁니다.
+3. 처음 한 번 데이터를 적재합니다. 장소·축제·이미지 임베딩까지 하며, Gemini 무료 한도 때문에 10분 정도 걸립니다. 이후에는 바뀐 장소만 처리합니다.
    ```bash
-   docker compose up -d db vector
+   docker compose exec api python -m pipeline.run
    ```
-4. 데이터를 적재합니다. 장소·축제·이미지 임베딩까지 하며, 처음에는 Gemini 무료 한도 때문에 10분 정도 걸립니다.
+   API를 쓸 수 없을 때는 시드 CSV(공공데이터 원본 48행)로 적재할 수 있습니다.
    ```bash
-   .venv/Scripts/python -m pipeline.run
+   docker compose exec api python -m pipeline.run --seed
    ```
-5. API와 UI를 실행합니다.
-   ```bash
-   .venv/Scripts/uvicorn api.main:app --port 8000
-   ```
-   ```bash
-   .venv/Scripts/streamlit run ui/app.py
-   ```
-6. 카카오 개발자 콘솔의 JavaScript 키 "JavaScript SDK 도메인"에 UI 주소(예: `http://localhost:8501`)를 등록해야 지도가 보입니다.
+4. 브라우저에서 `http://localhost:8501`을 엽니다. 상태 확인은 `http://localhost:8000/api/health`입니다.
+5. 카카오 개발자 콘솔에서 JavaScript 키의 "JavaScript SDK 도메인"에 UI 주소(예: `http://localhost:8501`)를 등록해야 지도가 보입니다.
+
+중지는 `docker compose down`입니다. 데이터는 볼륨에 남고, 지우려면 `docker compose down -v`를 씁니다.
+
+### 로컬 개발
+
+```bash
+python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
+```
+```bash
+docker compose up -d db vector
+```
+```bash
+.venv/Scripts/uvicorn api.main:app --reload --port 8000
+```
+```bash
+.venv/Scripts/streamlit run ui/app.py
+```
 
 테스트는 `pytest -q`로 돌립니다(DB가 없으면 DB 테스트는 skip). 사진 인식 평가는 `python -m eval.photo_eval <폴더>`입니다.
 

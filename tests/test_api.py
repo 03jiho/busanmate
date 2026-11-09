@@ -3,6 +3,7 @@ import time
 import uuid
 
 import pytest
+import requests
 from fastapi.testclient import TestClient
 
 from api import main
@@ -64,6 +65,19 @@ def test_admin_ingest_flow():
         time.sleep(0.05)
     assert (body["status"], body["new"], body["updated"], body["skipped"]) == ("done", 1, 2, 0)
     assert client.get("/api/admin/ingest/unknown", headers=h).json()["error"]["code"] == "NOT_FOUND"
+
+
+@pytest.mark.parametrize("exc, status, code", [
+    (requests.Timeout("t"), 504, "UPSTREAM_TIMEOUT"),
+    (requests.ConnectionError("c"), 502, "UPSTREAM_ERROR"),
+    (RuntimeError("bug"), 500, "INTERNAL"),
+])
+def test_upstream_failures_map_to_502_504(monkeypatch, sid, exc, status, code):
+    def boom(s, m):
+        raise exc
+    monkeypatch.setattr(main, "handle_chat", boom)
+    r = TestClient(main.app, raise_server_exceptions=False).post("/api/chat", json={"session_id": sid, "message": "a"})
+    assert r.status_code == status and r.json()["error"]["code"] == code
 
 
 def test_unknown_path_uses_error_format():

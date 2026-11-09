@@ -113,9 +113,10 @@ def show_result(r: dict) -> None:
     if "error" in r:
         st.error(r["error"]["message"])
         return
+    for n in r.get("notices") or []:  # 안내(날씨 미반영, 추정치, 조건 완화 등)는 맨 위에
+        st.info(n, icon="ℹ️")
     st.markdown(r["answer"])
-    for n in r.get("notices") or []:
-        st.caption(f"ℹ️ {n}")
+    by_place = {s["place_id"]: s for s in r.get("sources") or [] if "place_id" in s}
     course = r.get("course")
     if course and course.get("days"):
         def rain(p):
@@ -131,22 +132,27 @@ def show_result(r: dict) -> None:
                         st.map([{"lat": i["lat"], "lon": i["lng"]} for i in d["items"]])
                 with right:
                     for i in d["items"]:
-                        st.markdown(f"**{i['order']}. {i['name']}** · {i['category']}")
-                        if i.get("reason"):
-                            st.caption(i["reason"])
+                        place_card(f"{i['order']}. {i['name']}", i["category"], i.get("reason"), by_place.get(i["place_id"]))
                         if i.get("leg_to_next"):
                             st.markdown(f"<span style='color:#666'>　↓ {leg_text(i['leg_to_next'])}</span>",
                                         unsafe_allow_html=True)
     for p in r.get("places") or []:
-        st.markdown(f"**{p['name']}** · {p['category']} · {p['gu']}")
-        if p.get("reason"):
-            st.caption(p["reason"])
-    if r.get("sources"):
-        with st.expander(f"출처 {len(r['sources'])}건"):
-            for s in r["sources"]:
-                name = f"{s['name']} — " if s.get("name") else ""
-                link = f" ([원본]({s['url']}))" if s.get("url") else ""
-                st.markdown(f"- {name}{s['label']}{link} · {s['license']}")
+        place_card(p["name"], f"{p['category']} · {p['gu']}", p.get("reason"), by_place.get(p["place_id"]))
+    others = [s for s in r.get("sources") or [] if "place_id" not in s]  # 기상청·축제 등
+    for s in others:
+        link = f" ([원본]({s['url']}))" if s.get("url") else ""
+        st.caption(f"출처: {s['label']}{link} · {s['license']}")
+
+
+def place_card(title: str, sub: str, reason: str | None, source: dict | None) -> None:
+    """코스 카드 한 장: 장소, 추천 이유, 출처(제공처·원본 링크·이용 조건) (FR-003)."""
+    with st.container(border=True):
+        st.markdown(f"**{title}** · {sub}")
+        if reason:
+            st.write(reason)
+        if source:
+            link = f" · [원본]({source['url']})" if source.get("url") else ""
+            st.caption(f"출처: {source['label']}{link} · {source['license']}")
 
 
 # --- 사이드바: 선호 설정(FR-005), 예시, 관리자 ---
