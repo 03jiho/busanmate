@@ -96,5 +96,19 @@ def test_leg_mode_auto_walk_or_taxi():
     near, far = {**a, "lat": 35.105}, {**a, "lat": 35.20, "gu": "동래구"}
     assert estimate_leg(a, near)["mode"] == "walk"
     assert estimate_leg(a, far)["mode"] == "taxi"
-    assert estimate_leg(a, far, "walk")["mode"] == "walk"
     assert estimate_leg(a, near)["estimated"] is True
+
+
+def test_walk_only_never_returns_long_walk():
+    """도보만이어도 걸어서 walk_max_leg_min(30분)을 넘는 구간은 택시로 (UI에서 도보 145분이 나오던 문제)."""
+    a = {"lat": 35.10, "lng": 129.03, "gu": "중구"}
+    mid, far = {**a, "lat": 35.112}, {**a, "lat": 35.20, "gu": "동래구"}  # 보정 후 약 1.7km(26분), 16.7km
+    assert estimate_leg(a, mid, "walk")["mode"] == "walk" and estimate_leg(a, mid)["mode"] == "taxi"
+    leg = estimate_leg(a, far, "walk")
+    assert leg["mode"] == "taxi" and leg["walk_minutes"] > 30 and leg["minutes"] < leg["walk_minutes"]
+    # 하루 최소 2곳이라 장소를 더 뺄 수 없는 경우에도 긴 도보 구간이 남지 않는다
+    course = build_course([{**a, "place_id": 1, "name": "A", "category": "해변", "sim": 0.9, "indoor": False},
+                           {**far, "place_id": 2, "name": "B", "category": "음식점", "sim": 0.8, "indoor": True}],
+                          Conditions(query="x", mode="walk"))
+    legs = [i["leg_to_next"] for d in course["days"] for i in d["items"] if i["leg_to_next"]]
+    assert legs and all(lg["mode"] == "taxi" or lg["minutes"] <= 30 for lg in legs)

@@ -46,10 +46,11 @@ def day_label(dates: list[str], day: int) -> str:
 def leg_text(leg: dict) -> str:
     if leg["mode"] == "walk":
         return f"도보 {leg['minutes']}분 (예상)"
+    far = f" · 걸으면 {hm(leg['walk_minutes'])} 걸려 택시로" if leg.get("walk_minutes") else ""  # 도보만인데 먼 구간
     if leg["estimated"]:
-        return f"택시 약 {leg['minutes']}분 (예상)"
+        return f"택시 약 {leg['minutes']}분 (예상){far}"
     fare = f" · 약 {leg['taxi_fare']:,}원" if leg.get("taxi_fare") else ""
-    return f"택시 {leg['minutes']}분{fare}"
+    return f"택시 {leg['minutes']}분{fare}{far}"
 
 
 def schedule(day: dict) -> dict:

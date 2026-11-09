@@ -24,10 +24,19 @@ def road_km(a: dict, b: dict) -> float:
 
 
 def estimate_leg(a: dict, b: dict, mode: str = "auto") -> dict:
-    """mode: auto(가까우면 도보, 멀면 택시) / walk / taxi."""
+    """mode: auto(가까우면 도보, 멀면 택시) / walk / taxi.
+    walk(도보만)여도 걸어서 walk_max_leg_min을 넘는 구간은 택시로 바꾸고, 걸으면 걸리는 시간을 walk_minutes로 남긴다
+    (도보 145분 같은 구간을 내보내지 않는다. 모든 구간 계산이 여기를 지나므로 코스 생성·수정 모두에 적용된다)."""
     t = config()["travel"]
     km = road_km(a, b)
+    walk_min = km / t["speed_kmh"]["walk"] * 60
+    too_far = mode == "walk" and walk_min > config()["course"]["walk_max_leg_min"]
     if mode == "auto":
         mode = "walk" if km <= t["walk_max_km"] else "taxi"
-    return {"mode": mode, "minutes": max(1, round(km / t["speed_kmh"][mode] * 60)),
-            "meters": round(km * 1000), "estimated": True}
+    if too_far:
+        mode = "taxi"
+    leg = {"mode": mode, "minutes": max(1, round(km / t["speed_kmh"][mode] * 60)),
+           "meters": round(km * 1000), "estimated": True}
+    if too_far:
+        leg["walk_minutes"] = round(walk_min)
+    return leg

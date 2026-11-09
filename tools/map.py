@@ -41,7 +41,8 @@ class GetRouteTimes(BaseTool):
 
         def measure(pair):
             try:
-                pair[0]["leg_to_next"] = kakao_leg(*pair)
+                walk = pair[0]["leg_to_next"].get("walk_minutes")  # 도보만인데 멀어서 택시로 바꾼 구간 표시용
+                pair[0]["leg_to_next"] = {**kakao_leg(*pair), **({"walk_minutes": walk} if walk else {})}
                 return True
             except Exception as e:
                 # URL·키는 남기지 않는다 (RuntimeError는 우리가 만든 결과 코드 메시지라 안전)
@@ -52,6 +53,8 @@ class GetRouteTimes(BaseTool):
         notices = []
         if not all(ok):
             notices.append("일부 택시 구간은 길찾기 조회에 실패해 직선거리 기반 예상치로 표시합니다.")
+        if any(i["leg_to_next"] and i["leg_to_next"].get("walk_minutes") for d in course["days"] for i in d["items"]):
+            notices.append(f"걸어서 {config()['course']['walk_max_leg_min']}분이 넘는 구간은 택시로 바꿨습니다.")
         if any(i["leg_to_next"] and i["leg_to_next"]["mode"] == "walk" for d in course["days"] for i in d["items"]):
             notices.append("도보 구간 시간은 직선거리 기반 예상치입니다.")
         return ToolResult(ok=True, data={"taxi_legs": len(legs), "measured": sum(ok)}, notices=notices,

@@ -116,7 +116,8 @@ def plan_day(scored: list[dict], k: int, hours: float, mode: str, check_variety:
                 seq.append(min(alts, key=lambda p: haversine_km(p["lat"], p["lng"], clat, clng)))
             continue
         if mode == "walk" and len(ordered) > min_k:  # 도보 구간 하나가 너무 길면 그 끝의 낮은 점수 장소를 뺀다
-            legs = [(estimate_leg(a, b, "walk")["minutes"], a, b) for a, b in zip(ordered, ordered[1:])]
+            legs = [((lg := estimate_leg(a, b, "walk")).get("walk_minutes", lg["minutes"]), a, b)
+                    for a, b in zip(ordered, ordered[1:])]  # 걸어서 걸리는 시간 기준 (너무 먼 구간은 택시로 바뀐다)
             longest, a, b = max(legs, key=lambda x: x[0])
             if longest > walk_cap:
                 seq.remove(min((a, b), key=lambda p: p["score"]))
