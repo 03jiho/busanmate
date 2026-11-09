@@ -108,8 +108,10 @@ def build_response(state: dict) -> dict:
             log.warning("verify_places 제거 id=%s", dropped)  # ERR-007
     except Exception as e:
         log.warning("response LLM 실패: %s", type(e).__name__)
-        answer, reasons = ("요청하신 조건으로 코스를 만들었습니다." if course else "조건에 맞는 장소를 찾았습니다."), {}
-        notices.append("AI 설명을 만들지 못해 결과만 보여 드립니다.")
+        answer = "요청하신 조건으로 코스를 만들었습니다." if course else "조건에 맞는 장소를 찾았습니다."
+        # 추천 이유는 DB 설명의 첫 줄(공공데이터 장소 소개 문구)로 대신한다. 근거는 여전히 DB뿐이다 (AI-REQ-01·02)
+        reasons = {i: (places[i]["description"] or "").split("\n")[0][:80] or None for i in ids}
+        notices.append("AI 설명을 만들지 못해 추천 이유를 장소 소개 문구로 대신합니다.")
 
     if course:
         for d in course["days"]:

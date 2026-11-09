@@ -154,3 +154,9 @@ def test_llm_down_uses_rules_and_default_plan(fake):
     assert r["conditions"]["gu"] == ["해운대구"] and r["conditions"]["days"] == 2
     assert r["tool_calls"][0] == "search_places" and "build_course" in r["tool_calls"]
     assert r["course"]["days"] and any("AI" in n for n in r["notices"])
+    items = r["course"]["days"][0]["items"]
+    assert all(i["reason"] for i in items)  # LLM이 없어도 추천 이유는 DB 소개 문구로 채운다 (AC-002)
+
+    before = [i["place_id"] for i in items]  # LLM이 없어도 "두 번째 장소 빼줘"가 동작한다
+    after = [i["place_id"] for i in chat(sid, "두 번째 장소 빼줘")["course"]["days"][0]["items"]]  # 1일차 기준
+    assert sorted(after) == sorted(before[:1] + before[2:])

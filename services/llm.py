@@ -56,11 +56,12 @@ class GeminiClient:
             raise RuntimeError("LLM 일시 장애로 호출을 건너뜀")
         last, start = None, time.time()
         for model in self.cfg["models"]:
-            # 폴백 모델까지 합쳐 total_timeout_s 안에서 끝낸다. 남은 시간이 짧으면 다음 모델은 건너뛴다
+            # 폴백 모델까지 합쳐 total_timeout_s 안에서 끝낸다. Gemini는 10초보다 짧은 기한을 400으로 거부하므로
+            # 기한은 항상 timeout_s로 두고, 남은 예산이 그보다 적으면 다음 모델을 시도하지 않는다
             remaining = self.cfg["total_timeout_s"] - (time.time() - start)
-            if last is not None and remaining < self.cfg["timeout_s"] / 10:
+            if last is not None and remaining < self.cfg["timeout_s"]:
                 break
-            conf.http_options = types.HttpOptions(timeout=int(min(self.cfg["timeout_s"], remaining) * 1000))
+            conf.http_options = types.HttpOptions(timeout=int(self.cfg["timeout_s"] * 1000))
             t = time.time()
             try:
                 r = self.client.models.generate_content(model=model, contents=contents, config=conf)

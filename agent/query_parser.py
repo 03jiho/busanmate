@@ -59,13 +59,21 @@ def _rule_parse(message: str, has_course: bool) -> dict:
     gu = [g for g in BUSAN_GU if g in message or (len(g) > 2 and g[:-1] in message)]  # "해운대" → 해운대구
     nights = re.search(r"(\d)\s*박", message)
     theme_words = {"바다": "바다|해변|해수욕장", "맛집": "맛집|먹|식당", "역사·문화": "역사|문화|박물관", "자연": "숲|산책|자연"}
-    if has_course and re.search(r"빼|바꿔|교체|넣어|추가", message):
+    edit = None
+    if has_course and re.search(r"빼|삭제|바꿔|교체|넣어|추가", message):
         intent = "edit"
+        nth = re.search(r"(첫|두|세|네|다섯|여섯|\d+)\s*번째", message)
+        day = re.search(r"(\d)\s*일차", message)
+        op = "remove" if re.search(r"빼|삭제", message) and not re.search(r"넣어|추가|바꿔|교체", message) else \
+            "replace" if re.search(r"바꿔|교체", message) or (nth and re.search(r"넣어|추가", message)) else "add"
+        ordinals = {"첫": 1, "두": 2, "세": 3, "네": 4, "다섯": 5, "여섯": 6}
+        edit = {"op": op, "index": (ordinals.get(nth.group(1)) or int(nth.group(1))) if nth else None,
+                "day": int(day.group(1)) if day else 1, "spec": message}
     elif re.search(r"코스|일정|여행|당일|박", message):
         intent = "course"
     else:
         intent = "search"
-    return {"intent": intent, "gu": gu, "query": message,
+    return {"intent": intent, "gu": gu, "query": message, "edit": edit,
             "days": int(nights.group(1)) + 1 if nights else 1,
             "mode": "walk" if re.search(r"걸어|도보", message) else ("taxi" if "택시" in message else None),
             "indoor": True if "실내" in message else None,
@@ -84,6 +92,8 @@ def parse(message: str, today: date, prefs: dict | None = None, has_course: bool
         notices.append("AI가 질문을 해석하지 못해 간단한 규칙으로 조건을 읽었습니다.")
 
     intent = raw.get("intent", "search")
+    if intent == "search" and raw.get("start_date") and re.search(r"코스|일정|하루|걸어서|여행|나들이", message):
+        intent = "course"  # 방문 날짜 + 동선 표현이면 장소 검색이 아니라 코스 요청 (평가셋 오분류 4건)
     cond = Conditions(
         query=raw.get("query") or message,
         gu=[g for g in raw.get("gu") or [] if g in BUSAN_GU],
