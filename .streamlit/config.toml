@@ -2,6 +2,9 @@
 [client]
 toolbarMode = "minimal"
 
+[server]
+maxUploadSize = 10                  # MB, API 사진 한도(config image.max_bytes)와 같게
+
 [theme]
 base = "light"
 primaryColor = "#1d5fa7"
