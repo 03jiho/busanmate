@@ -89,24 +89,24 @@ def plan_day(scored: list[dict], k: int, hours: float, mode: str, check_variety:
     min_k, notices = c["places_per_day_min"], []
     # 하루 동선이 흩어지지 않게 1위 장소 반경 안에서만 고른다 (도보만이면 더 좁게)
     radius = c["walk_radius_km"] if mode == "walk" else c["day_radius_km"]
+    group = scored
     near = [p for p in scored if haversine_km(p["lat"], p["lng"], scored[0]["lat"], scored[0]["lng"]) <= radius]
     if len(near) >= min_k:
         scored, k = near, min(k, len(near))
     elif mode == "walk":
         notices.append("걸어서 다닐 만한 거리에 후보가 적어 먼 구간이 포함됩니다.")
     seq = select(scored, k)
-    spare = [p for p in scored if p not in seq]  # 점수 순 교체 후보
     while True:
         ordered = best_order(seq, check_variety)
         if ordered is None:
-            # 한 분류가 많아 3연속을 피할 순서가 없다(FR-006): 그 분류의 최저점 장소를 다른 분류 후보로 바꾸고,
-            # 후보가 없으면 뺀다. 2곳 이하는 항상 조건을 만족하므로 반복은 끝난다.
+            # 한 분류가 많아 3연속을 피할 순서가 없다(FR-006): 그 분류의 최저점 장소를, 그날 그룹에서 지금 동선에
+            # 가장 가까운 다른 분류 장소로 바꾸고, 없으면 뺀다. 2곳 이하는 항상 조건을 만족하므로 반복은 끝난다.
             top = Counter(p["category"] for p in seq).most_common(1)[0][0]
             seq.remove(min((p for p in seq if p["category"] == top), key=lambda p: p["score"]))
-            alt = next((p for p in spare if p["category"] != top), None)
-            if alt:
-                seq.append(alt)
-                spare.remove(alt)
+            clat, clng = _centroid(seq)
+            alts = [p for p in group if p["category"] != top and p not in seq]
+            if alts:
+                seq.append(min(alts, key=lambda p: haversine_km(p["lat"], p["lng"], clat, clng)))
             continue
         if day_minutes(ordered, mode) <= hours * 60 or len(ordered) <= min_k:
             break
@@ -117,17 +117,19 @@ def plan_day(scored: list[dict], k: int, hours: float, mode: str, check_variety:
 
 
 def kmeans(points: list[dict], k: int, iters: int = 20) -> list[list[dict]]:
-    """위·경도 k-means. 첫 중심은 점수 1위, 이후는 기존 중심에서 가장 먼 점(결정적).
-    초기 중심은 점수 상위 절반에서만 골라 외곽의 저점수 장소가 하루를 차지하지 않게 한다."""
+    """위·경도 k-means(그룹 크기 상한 = ⌈n/k⌉). 첫 중심은 점수 1위, 이후는 기존 중심에서 가장 먼 점(결정적).
+    초기 중심은 점수 상위 절반에서만 고르고, 상한을 둬서 외곽 한 곳이 하루를 차지하는 [1, 23] 같은 쏠림을 막는다."""
     seeds = points[:max(k, len(points) // 2)]
     centers = [(points[0]["lat"], points[0]["lng"])]
     while len(centers) < k:
         centers.append(max(((p["lat"], p["lng"]) for p in seeds),
                            key=lambda c: min(haversine_km(*c, *m) for m in centers)))
+    cap = math.ceil(len(points) / k)
     for _ in range(iters):
         groups = [[] for _ in centers]
-        for p in points:
-            groups[min(range(k), key=lambda i: haversine_km(p["lat"], p["lng"], *centers[i]))].append(p)
+        for p in points:  # 점수 순으로, 가장 가까운 중심 중 자리가 남은 곳에
+            order = sorted(range(k), key=lambda i: haversine_km(p["lat"], p["lng"], *centers[i]))
+            groups[next(i for i in order if len(groups[i]) < cap)].append(p)
         new = [_centroid(g) if g else centers[i] for i, g in enumerate(groups)]
         if new == centers:
             break
@@ -153,7 +155,9 @@ def build_course(cands: list[dict], cond, rain_by_day: list[float | None] | None
     rain = (list(rain_by_day or []) + [None] * days)[:days]
     hours = cond.hours or c["default_available_hours"]
     k = places_per_day(hours)
-    check_variety = not cond.categories  # 사용자가 분류를 지정했으면 연속 제한을 두지 않는다
+    # 사용자가 분류를 지정했으면(테마가 분류 하나에만 대응하는 경우 포함, 예: 맛집 → 음식점) 연속 제한을 두지 않는다 (FR-006)
+    theme_cats = config()["preferences"]["theme_categories"].get(cond.theme, [])
+    check_variety = not cond.categories and len(theme_cats) != 1
 
     if days == 1:
         groups = [cands]

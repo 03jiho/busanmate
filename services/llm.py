@@ -54,8 +54,13 @@ class GeminiClient:
         # 모든 모델이 방금 실패했으면 잠시 바로 실패시켜 규칙 기반 대체로 빨리 넘어가게 한다 (AI-REQ-02, NFR-001)
         if time.time() < self._down_until:
             raise RuntimeError("LLM 일시 장애로 호출을 건너뜀")
-        last = None
+        last, start = None, time.time()
         for model in self.cfg["models"]:
+            # 폴백 모델까지 합쳐 total_timeout_s 안에서 끝낸다. 남은 시간이 짧으면 다음 모델은 건너뛴다
+            remaining = self.cfg["total_timeout_s"] - (time.time() - start)
+            if last is not None and remaining < self.cfg["timeout_s"] / 10:
+                break
+            conf.http_options = types.HttpOptions(timeout=int(min(self.cfg["timeout_s"], remaining) * 1000))
             t = time.time()
             try:
                 r = self.client.models.generate_content(model=model, contents=contents, config=conf)

@@ -5,7 +5,8 @@ llm:                                # 제공자는 .env의 LLM_PROVIDER (기본 
   # 앞에서부터 시도, 503(수요 과다)·429(한도)면 다음 모델로 (2026-11-04 확인: 2.5-flash는 신규 사용자 불가)
   models: [gemini-3.5-flash-lite, gemini-3.5-flash, gemini-3.8-flash]
   temperature: 0.2
-  timeout_s: 10
+  timeout_s: 10                     # 모델 하나의 최대 대기
+  total_timeout_s: 12               # 폴백 모델까지 합친 한 번의 호출 최대 대기 (전부 실패해도 이 안에 규칙 기반으로)
   cooldown_s: 60                    # 모든 모델이 실패하면 이 시간 동안 LLM을 건너뛰고 규칙 기반으로 처리
   cache_ttl_s: 86400                # 조건 추출 응답 캐시 (이동시간은 캐시 대상 아님, ADR-008)
   prompt_version: v1                # agent/prompts/<이름>_<버전>.md

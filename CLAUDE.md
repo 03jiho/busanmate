@@ -135,7 +135,7 @@ ADR 요약: 001 계층형 모놀리식 API · 002 RAG(속성 필터+벡터) + `[
 - `services/search.py`: `Conditions` dataclass + `search(cond)`. Chroma에서 metadata where(gu·category·indoor)로 거른 뒤 PG에서 활성 행만 붙인다. 후보 수는 `candidates_n × 일수`다. 후보가 부족하면 indoor → gu 순서로 조건을 풀고 안내문을 붙인다(open_hours 필터는 운영시간 파싱 전이라 아직 없음).
 - `services/planner.py`: `score` → `select`(λ 다양성) → `best_order`(순열 전수, 같은 분류 3연속 금지) → 가용 시간 초과 시 최저점 제거. 후보가 한 분류에 몰려 3연속을 피할 순서가 없으면, 그 분류의 최저점 장소를 다른 분류 후보로 바꾼다(없으면 뺀다). 제약을 풀지는 않는다.
 - 테스트 추적: TC-006 = `tests/test_planner.py::test_tc006_course_rules`(가용 4·6·9시간 × 분포 2종에서 2~6곳, 무작위 순서 100회 평균보다 짧은 동선, 가용 시간 이내, 3연속 없음). TC-014 = `test_tc014_multi_day`(날짜별 FR-006 충족, 전체 중복 없음, 비 오는 날 실내 비율 최대). 점수화·경로에 LLM을 쓰지 않는다는 검사 = `test_course_is_pure_code`. `dist` 항은 후보 전체 중심이 아니라 **유사도 1위 장소(앵커)에서의 거리**로 잰다. 하루 장소는 앵커 반경(도보 `walk_radius_km` 2.5, 그 외 `day_radius_km` 8) 안에서 고른다.
-- 다일 일정: 점수 상위(필요 수 × 2)를 k-means로 나눈다(초기 중심은 상위 절반에서만). 그다음 각 그룹 1위 장소 반경 안의 남은 후보를 보태고, 강수확률이 높은 날에 실내 비율이 높은 그룹을 배정한다. 일정 전체에서 장소 중복은 없다.
+- 다일 일정: 점수 상위(필요 수 × 2)를 k-means로 나눈다(초기 중심은 상위 절반에서만, 그룹 크기 상한 ⌈n/일수⌉로 [1, 23] 같은 쏠림 방지). 테마가 분류 하나에만 대응하면(맛집 → 음식점) 분류를 지정한 것으로 보고 3연속 제한을 두지 않는다(FR-006). 3연속 교체 후보는 그날 그룹 전체에서 동선에 가장 가까운 다른 분류 장소다. 그다음 각 그룹 1위 장소 반경 안의 남은 후보를 보태고, 강수확률이 높은 날에 실내 비율이 높은 그룹을 배정한다. 일정 전체에서 장소 중복은 없다.
 - `build_course` 출력: `{"days": [{"day", "rain_prob", "items": [{order, place_id, name, category, gu, lat, lng, reason(None, 3단계 ResponseBuilder가 채움), leg_to_next{mode, minutes, meters, estimated}}]}], "notices": [...]}`.
 
 ## 에이전트 (3단계 결정, 2026-11-04)
@@ -153,7 +153,7 @@ ADR 요약: 001 계층형 모놀리식 API · 002 RAG(속성 필터+벡터) + `[
 - `api/main.py`: API-001, 003~008. 오류는 모두 `{"error": {"code", "message"}}` 형식이다. 검증 오류는 400 INVALID_INPUT(필드 이름만, 값은 넣지 않음), 세션당 분당 20회를 넘으면 429다. 관리자 토큰은 `hmac.compare_digest`로 비교한다. 수집은 백그라운드 스레드에서 돌고 `run_id`로 조회하며, 동시에 하나만 실행한다(409). health는 DB·벡터 상태를 함께 돌려준다. API-002(사진)는 5단계다.
 - `ui/app.py`: API만 호출한다. 선호 설정은 바뀔 때마다 PUT하고, 예시 질문 버튼, 날짜별 탭(지도 + 장소·구간 목록), 출처 펼치기, 관리자 수집 패널을 둔다. 지도는 카카오맵 JS SDK다(도보는 초록 점선, 택시는 파란 실선). 장소명은 `textContent`로 넣는다.
 - **카카오맵 도메인 등록 필요:** 카카오 개발자 콘솔 → 앱 → 플랫폼 → Web 사이트 도메인에 `http://localhost:8501`(배포 시 그 주소)을 등록해야 한다. 등록하지 않으면 SDK가 401(domain mismatched)을 돌려주고, UI는 지도 칸에 안내 문구를 띄운다.
-- **LLM 장애 대응:** 모든 모델이 실패(429·5xx·타임아웃)하면 `cooldown_s`(60초) 동안 LLM을 건너뛰고 규칙 기반 대체로 바로 처리한다(`services/llm.py`). 타임아웃은 10초다.
+- **LLM 장애 대응:** 모든 모델이 실패(429·5xx·타임아웃)하면 `cooldown_s`(60초) 동안 LLM을 건너뛰고 규칙 기반 대체로 바로 처리한다(`services/llm.py`). 모델 하나의 타임아웃은 10초이고, 폴백 모델까지 합친 한 번의 호출은 `total_timeout_s`(12초)를 넘지 않는다. 요청 자체가 잘못된 4xx(429 제외)는 다른 모델로 넘기지 않는다.
 - **로컬 실행:** 미리보기 설정 `busanmate-api`(8000), `busanmate-ui`(8501)는 `GitHub/.claude/launch.json`에 있다. 이 PC는 스마트 앱 컨트롤을 사용자가 꺼서 psycopg DLL이 로드된다(켜져 있던 동안에는 차단됐음).
 
 ## 사진 탐색 (5단계, 2026-11-05)
