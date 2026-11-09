@@ -90,24 +90,37 @@ def plan_day(scored: list[dict], k: int, hours: float, mode: str, check_variety:
     # 하루 동선이 흩어지지 않게 1위 장소 반경 안에서만 고른다 (도보만이면 더 좁게)
     radius = c["walk_radius_km"] if mode == "walk" else c["day_radius_km"]
     group = scored
-    near = [p for p in scored if haversine_km(p["lat"], p["lng"], scored[0]["lat"], scored[0]["lng"]) <= radius]
+    anchor = scored[0]
+
+    def dist(p):
+        return haversine_km(p["lat"], p["lng"], anchor["lat"], anchor["lng"])
+
+    near = [p for p in scored if dist(p) <= radius]
     if len(near) >= min_k:
         scored, k = near, min(k, len(near))
-    elif mode == "walk":
-        notices.append("걸어서 다닐 만한 거리에 후보가 적어 먼 구간이 포함됩니다.")
+    elif mode == "walk":  # 반경 안이 부족하면 그룹 전체가 아니라 1위 장소에서 가까운 순으로
+        scored = sorted(group, key=dist)[:max(min_k, k)]
+        notices.append("걸어서 다닐 만한 거리에 후보가 적어 장소 수를 줄였습니다.")
     seq = select(scored, k)
+    walk_cap = c["walk_max_leg_min"]
     while True:
         ordered = best_order(seq, check_variety)
         if ordered is None:
-            # 한 분류가 많아 3연속을 피할 순서가 없다(FR-006): 그 분류의 최저점 장소를, 그날 그룹에서 지금 동선에
-            # 가장 가까운 다른 분류 장소로 바꾸고, 없으면 뺀다. 2곳 이하는 항상 조건을 만족하므로 반복은 끝난다.
+            # 한 분류가 많아 3연속을 피할 순서가 없다(FR-006): 그 분류의 최저점 장소를 지금 동선에 가장 가까운
+            # 다른 분류 장소로 바꾸고, 없으면 뺀다. 도보만이면 반경 안에서만 찾는다. 2곳 이하는 항상 조건을 만족한다.
             top = Counter(p["category"] for p in seq).most_common(1)[0][0]
             seq.remove(min((p for p in seq if p["category"] == top), key=lambda p: p["score"]))
             clat, clng = _centroid(seq)
-            alts = [p for p in group if p["category"] != top and p not in seq]
+            alts = [p for p in (scored if mode == "walk" else group) if p["category"] != top and p not in seq]
             if alts:
                 seq.append(min(alts, key=lambda p: haversine_km(p["lat"], p["lng"], clat, clng)))
             continue
+        if mode == "walk" and len(ordered) > min_k:  # 도보 구간 하나가 너무 길면 그 끝의 낮은 점수 장소를 뺀다
+            legs = [(estimate_leg(a, b, "walk")["minutes"], a, b) for a, b in zip(ordered, ordered[1:])]
+            longest, a, b = max(legs, key=lambda x: x[0])
+            if longest > walk_cap:
+                seq.remove(min((a, b), key=lambda p: p["score"]))
+                continue
         if day_minutes(ordered, mode) <= hours * 60 or len(ordered) <= min_k:
             break
         seq.remove(min(seq, key=lambda p: p["score"]))

@@ -45,6 +45,13 @@ def test_no_three_in_a_row_even_when_one_category_dominates():  # FR-006: 후보
     assert_fr006(seq, 9)
 
 
+@pytest.mark.parametrize("spread", [0.02, 0.1, 0.4])
+def test_walk_mode_has_no_long_walking_leg(spread):  # "걸어서"에 도보 106분 구간이 나오던 문제
+    seq = build_course(cands(12, spread=spread), Conditions(query="x", mode="walk", hours=9))["days"][0]["items"]
+    legs = [i["leg_to_next"]["minutes"] for i in seq if i["leg_to_next"]]
+    assert len(seq) >= 2 and (len(seq) == 2 or max(legs) <= 30)
+
+
 def test_course_is_pure_code(monkeypatch):  # AI-REQ-04: 점수화·경로는 LLM 없이
     def boom():
         raise AssertionError("LLM을 호출하면 안 된다")

@@ -85,6 +85,7 @@ course:                             # COMP-06, FR-006, FR-014
   default_move_min: 20              # 초안: K 계산용 평균 이동 시간
   walk_radius_km: 2.5               # 초안: 도보만(mode=walk)일 때 하루 장소를 1위 장소 반경 안에서만 고른다
   day_radius_km: 8                  # 초안: auto/taxi일 때 같은 기준의 반경
+  walk_max_leg_min: 30              # 초안: 도보만일 때 구간 하나의 최대 도보 시간
   max_same_category_run: 2          # 같은 분류 3곳 연속 금지
 
 preferences:                        # FR-005 선호 테마 → 가산점을 줄 분류 (pref 항)
