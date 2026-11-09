@@ -112,3 +112,15 @@ def test_walk_only_never_returns_long_walk():
                           Conditions(query="x", mode="walk"))
     legs = [i["leg_to_next"] for d in course["days"] for i in d["items"] if i["leg_to_next"]]
     assert legs and all(lg["mode"] == "taxi" or lg["minutes"] <= 30 for lg in legs)
+
+
+def test_walk_course_moves_to_walkable_cluster():
+    """도보: 점수 1위가 외딴 곳(해운대수목원처럼)이면 걸어서 이어지는 장소 묶음으로 코스를 짠다 (택시 구간 없음)."""
+    lone = {"place_id": 1, "name": "외딴곳", "category": "공원·자연", "gu": "해운대구", "lat": 35.22, "lng": 129.13,
+            "indoor": False, "sim": 0.95}
+    cluster = [{"place_id": 10 + i, "name": f"c{i}", "category": CATS[i % 4], "gu": "해운대구",
+                "lat": 35.158 + i * 0.002, "lng": 129.160, "indoor": False, "sim": 0.8 - i * 0.01} for i in range(4)]
+    course = build_course([lone] + cluster, Conditions(query="x", mode="walk"))
+    items = course["days"][0]["items"]
+    assert 1 not in {i["place_id"] for i in items} and len(items) >= 2
+    assert all(i["leg_to_next"]["mode"] == "walk" for i in items[:-1])
