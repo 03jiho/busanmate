@@ -84,13 +84,14 @@ course:                             # COMP-06, FR-006, FR-014
   default_stay_min: 60              # 초안: 장소당 평균 체류
   day_start: "10:00"                # 초안: 하루 출발 시각 (화면의 방문 예정 시각 계산 기준)
   default_move_min: 20              # 초안: K 계산용 평균 이동 시간
+  walk_radius_km: 2.5               # 초안: 도보만일 때 하루 장소를 먼저 기준 장소 반경 안에서 고른다(모자라면 가까운 순)
   day_radius_km: 8                  # 초안: auto/taxi일 때 같은 기준의 반경
   walk_max_leg_min: 30              # 초안: 도보만일 때 구간 하나의 최대 도보 시간
   max_same_category_run: 2          # 같은 분류 3곳 연속 금지
 
 preferences:                        # FR-005 선호 테마 → 가산점을 줄 분류 (pref 항)
   theme_categories:
-    바다: [해변, 공원·자연]
+    바다: [해변]                      # 공원·자연을 넣으면 장산·수목원 같은 내륙이 바다 코스에 섞인다
     자연: [공원·자연]
     역사·문화: [문화시설, 사찰·종교, 거리·마을]
     맛집: [음식점]

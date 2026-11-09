@@ -87,49 +87,35 @@ def plan_day(scored: list[dict], k: int, hours: float, mode: str, check_variety:
     """K곳을 고르고 순서를 정한다. 가용 시간을 넘으면 최저 점수 장소를 빼고 다시 정한다."""
     c = config()["course"]
     min_k, notices = c["places_per_day_min"], []
-    # 하루 동선이 흩어지지 않게 기준 장소 반경 안에서만 고른다 (도보만이면 반경 대신 도보 시간 상한)
-    radius = c["day_radius_km"]
+    # 하루 동선이 흩어지지 않게 기준 장소 반경 안에서만 고른다.
+    # 도보만이어도 장소 수는 줄이지 않는다: 걸어서 walk_max_leg_min을 넘는 구간은 estimate_leg가 택시로 바꾼다.
     group = scored
     anchor = scored[0]
-    if mode == "walk":  # 도보: 1위 장소가 외딴 곳이면, 걸어서 walk_max_leg_min 안에 닿는 이웃이 있는 장소 중
-        # 점수가 가장 높은 곳을 기준으로 (반경 2.5km는 직선 기준이라 도보 30분 상한과 맞지 않는다: 이웃 판정은 도보 시간으로)
+    if mode == "walk":  # 도보: 1위가 외딴 곳이면 걸어서 닿는 이웃이 있는 장소 중 점수 1위를 기준으로 (도보 구간이 많아지게)
         dense = [p for p in scored
                  if sum("walk_minutes" not in estimate_leg(p, q, "walk") for q in scored if q is not p) >= min_k - 1]
         anchor = dense[0] if dense else anchor
-
     def dist(p):
         return haversine_km(p["lat"], p["lng"], anchor["lat"], anchor["lng"])
 
-    if mode == "walk":  # 도보: 기준점에서 걸어서 상한 안인 곳만 → [기준점, 이웃] 둘만 남아도 도보로 이어진다
-        near = [p for p in scored if p is anchor or "walk_minutes" not in estimate_leg(anchor, p, "walk")]
-    else:
-        near = [p for p in scored if dist(p) <= radius]
+    near = [p for p in scored if dist(p) <= c["walk_radius_km" if mode == "walk" else "day_radius_km"]]
+    if mode == "walk" and len(near) < k:  # 도보: 반경 안이 모자라면 장소 수를 줄이지 않고 가까운 순으로 채운다(먼 구간은 택시)
+        near = sorted(scored, key=dist)[:k]
     if len(near) >= min_k:
         scored, k = near, min(k, len(near))
-    elif mode == "walk":  # 반경 안이 부족하면 그룹 전체가 아니라 1위 장소에서 가까운 순으로
-        scored = sorted(group, key=dist)[:max(min_k, k)]
-        notices.append("걸어서 다닐 만한 거리에 후보가 적어 장소 수를 줄였습니다.")
     seq = select(scored, k)
-    walk_cap = c["walk_max_leg_min"]
     while True:
         ordered = best_order(seq, check_variety)
         if ordered is None:
             # 한 분류가 많아 3연속을 피할 순서가 없다(FR-006): 그 분류의 최저점 장소를 지금 동선에 가장 가까운
-            # 다른 분류 장소로 바꾸고, 없으면 뺀다. 도보만이면 반경 안에서만 찾는다. 2곳 이하는 항상 조건을 만족한다.
+            # 다른 분류 장소로 바꾸고, 없으면 뺀다. 2곳 이하는 항상 조건을 만족한다.
             top = Counter(p["category"] for p in seq).most_common(1)[0][0]
             seq.remove(min((p for p in seq if p["category"] == top), key=lambda p: p["score"]))
             clat, clng = _centroid(seq)
-            alts = [p for p in (scored if mode == "walk" else group) if p["category"] != top and p not in seq]
+            alts = [p for p in group if p["category"] != top and p not in seq]
             if alts:
                 seq.append(min(alts, key=lambda p: haversine_km(p["lat"], p["lng"], clat, clng)))
             continue
-        if mode == "walk" and len(ordered) > min_k:  # 도보 구간 하나가 너무 길면 그 끝의 낮은 점수 장소를 뺀다
-            legs = [((lg := estimate_leg(a, b, "walk")).get("walk_minutes", lg["minutes"]), a, b)
-                    for a, b in zip(ordered, ordered[1:])]  # 걸어서 걸리는 시간 기준 (너무 먼 구간은 택시로 바뀐다)
-            longest, a, b = max(legs, key=lambda x: x[0])
-            if longest > walk_cap:  # 기준점은 남긴다
-                seq.remove(min((p for p in (a, b) if p is not anchor), key=lambda p: p["score"]))
-                continue
         if day_minutes(ordered, mode) <= hours * 60 or len(ordered) <= min_k:
             break
         seq.remove(min(seq, key=lambda p: p["score"]))

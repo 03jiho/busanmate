@@ -47,9 +47,11 @@ def test_no_three_in_a_row_even_when_one_category_dominates():  # FR-006: 후보
 
 @pytest.mark.parametrize("spread", [0.02, 0.1, 0.4])
 def test_walk_mode_has_no_long_walking_leg(spread):  # "걸어서"에 도보 106분 구간이 나오던 문제
+    """도보 구간은 30분 이하, 걸어서 30분 넘는 구간은 택시(장소 수는 줄이지 않는다)."""
     seq = build_course(cands(12, spread=spread), Conditions(query="x", mode="walk", hours=9))["days"][0]["items"]
-    legs = [i["leg_to_next"]["minutes"] for i in seq if i["leg_to_next"]]
-    assert len(seq) >= 2 and (len(seq) == 2 or max(legs) <= 30)
+    legs = [i["leg_to_next"] for i in seq if i["leg_to_next"]]
+    assert len(seq) == 6
+    assert all(lg["minutes"] <= 30 if lg["mode"] == "walk" else lg["walk_minutes"] > 30 for lg in legs)
 
 
 def test_course_is_pure_code(monkeypatch):  # AI-REQ-04: 점수화·경로는 LLM 없이
@@ -114,13 +116,14 @@ def test_walk_only_never_returns_long_walk():
     assert legs and all(lg["mode"] == "taxi" or lg["minutes"] <= 30 for lg in legs)
 
 
-def test_walk_course_moves_to_walkable_cluster():
-    """도보: 점수 1위가 외딴 곳(해운대수목원처럼)이면 걸어서 이어지는 장소 묶음으로 코스를 짠다 (택시 구간 없음)."""
+def test_walk_course_keeps_places_and_taxis_far_legs():
+    """도보: 장소 수를 줄이지 않는다. 걸어서 30분 넘는 구간(외딴 해운대수목원 같은 곳)만 택시로 가고 나머지는 걷는다."""
     lone = {"place_id": 1, "name": "외딴곳", "category": "공원·자연", "gu": "해운대구", "lat": 35.22, "lng": 129.13,
             "indoor": False, "sim": 0.95}
     cluster = [{"place_id": 10 + i, "name": f"c{i}", "category": CATS[i % 4], "gu": "해운대구",
                 "lat": 35.158 + i * 0.002, "lng": 129.160, "indoor": False, "sim": 0.8 - i * 0.01} for i in range(4)]
-    course = build_course([lone] + cluster, Conditions(query="x", mode="walk"))
-    items = course["days"][0]["items"]
-    assert 1 not in {i["place_id"] for i in items} and len(items) >= 2
-    assert all(i["leg_to_next"]["mode"] == "walk" for i in items[:-1])
+    items = build_course([lone] + cluster, Conditions(query="x", mode="walk"))["days"][0]["items"]
+    legs = [i["leg_to_next"] for i in items[:-1]]
+    assert len(items) == 5  # 외딴 1위도 빼지 않는다
+    assert [lg["mode"] for lg in legs].count("taxi") == 1 and next(lg for lg in legs if lg["mode"] == "taxi")["walk_minutes"] > 30
+    assert all(lg["minutes"] <= 30 for lg in legs if lg["mode"] == "walk")
