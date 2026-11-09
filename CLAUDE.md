@@ -163,6 +163,11 @@ ADR 요약: 001 계층형 모놀리식 API · 002 RAG(속성 필터+벡터) + `[
 - **API-002** `POST /api/search/image`(multipart: session_id, file). 따뜻한 상태에서 약 3초 걸린다. UI에는 사이드바 "사진으로 찾기"와, 결과마다 "코스에 넣기" 버튼(채팅으로 추가 요청)이 있다.
 - **평가:** `python -m eval.photo_eval <폴더>`(사진과 `labels.csv`(file,place_id), 색인에 없는 사진) → Top-1·Top-5·인식률. `--sanity`는 색인 원본의 썸네일이라 연결 점검용이다(Top-5 100%, 인식률 87.5%). 거의 같은 이미지도 12.5%가 τ=0.80 미만이었으므로, 실제 평가 사진으로 τ를 낮출지 검토해야 한다.
 
+## 수용 기준 점검 (2026-11-10)
+- `python -m eval.acceptance`(실행 중인 API: AC-001·002·004·009 + 시나리오), `python -m eval.acceptance --outage`(AC-006: 외부 키를 그 프로세스에서만 무효화), `python -m eval.conditions_eval`(AC-003, `eval/queries.jsonl`은 Claude가 만든 초안이라 팀 검토 필요). AC-005(미사용 사진)와 AC-008(사용자 5명)은 사람·데이터가 필요하다.
+- Gemini는 요청 기한이 10초보다 짧으면 400으로 거부한다. 그래서 모델마다 기한은 항상 10초이고, 남은 예산이 10초 미만이면 다음 모델을 건너뛴다.
+- LLM이 모두 실패하면: 검색은 키워드 대체(`_keyword_query`), 추천 이유는 DB 설명 첫 줄, 코스 수정은 규칙 기반 해석으로 처리한다.
+
 ## 작업 순서
 0. 뼈대: config 로더, `/api/health`, `db/schema.sql`, `docker-compose.yml`, requirements.txt. 빈 파일은 미리 만들지 않는다.
 1. 데이터: 부산 3종 API 샘플로 필드 매핑 → DataPipeline(upsert, ingest_log) → 텍스트 임베딩 → Chroma
