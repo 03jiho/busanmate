@@ -1,0 +1,24 @@
+# UI 테마 (COMP-01). 포인트 색은 항구 파랑 하나, 지도 도보 구간 초록이 보조색.
+[client]
+toolbarMode = "minimal"
+
+[theme]
+base = "light"
+primaryColor = "#1d5fa7"
+backgroundColor = "#fbfaf8"
+secondaryBackgroundColor = "#f3f1ec"
+textColor = "#1d1d1f"
+borderColor = "#e3e0d8"
+linkColor = "#1d5fa7"
+baseRadius = "6px"
+showWidgetBorder = true
+font = "Pretendard, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif"
+baseFontSize = 15
+
+[[theme.fontFaces]]
+family = "Pretendard"
+url = "https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/variable/woff2/PretendardVariable.woff2"
+weight = "45 920"
+
+[theme.sidebar]
+backgroundColor = "#f3f1ec"
