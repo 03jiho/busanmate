@@ -1,4 +1,6 @@
 """SearchService (COMP-05, FR-002): 속성 필터 + 벡터 유사도 하이브리드 검색, 후보가 부족하면 조건 완화."""
+import logging
+import re
 from dataclasses import dataclass, field, replace
 
 from psycopg.rows import dict_row
@@ -7,6 +9,7 @@ import db
 from services.embedding import embed_texts
 from settings import config
 
+log = logging.getLogger("search")
 PLACE_FIELDS = ["place_id", "source", "name", "category", "gu", "address", "lat", "lng", "indoor",
                 "open_hours", "description", "url", "license"]
 
@@ -62,12 +65,39 @@ def _query(vec: list[float], c: Conditions, n: int) -> list[dict]:
     return sorted(({**p, "sim": sims[p["place_id"]]} for p in rows), key=lambda p: -p["sim"])
 
 
+def _keyword_query(c: Conditions, n: int) -> list[dict]:
+    """임베딩을 쓸 수 없을 때(Gemini 장애) 대체 검색: 속성 필터 + 이름·설명에 질의 낱말이 들어간 수 (SDD §7.4)."""
+    words = re.findall(r"[가-힣A-Za-z0-9]{2,}", c.query)[:8]
+    hit = " + ".join(["((name || ' ' || coalesce(description, '')) ILIKE %s)::int"] * len(words)) or "0"
+    where, params = ["is_active"], [f"%{w}%" for w in words]
+    for col, val in (("gu", c.gu), ("category", c.categories)):
+        if val:
+            where.append(f"{col} = ANY(%s)")
+            params.append(val)
+    if c.indoor is not None:
+        where.append("indoor = %s")
+        params.append(c.indoor)
+    with db.connect() as conn, conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(f"SELECT {', '.join(PLACE_FIELDS)}, ({hit}) AS hits FROM place WHERE {' AND '.join(where)} "
+                    f"ORDER BY hits DESC, place_id LIMIT %s", (*params, n))
+        rows = cur.fetchall()
+    return [{**{k: v for k, v in p.items() if k != "hits"}, "sim": min(1.0, 0.3 + 0.1 * p["hits"])} for p in rows]
+
+
 def search(cond: Conditions, n: int | None = None, embed=embed_texts) -> tuple[list[dict], list[str]]:
-    """후보(유사도 내림차순)와 사용자 안내문. 후보가 min_candidates 미만이면 relax_order 순서로 조건을 푼다."""
+    """후보(유사도 내림차순)와 사용자 안내문. 후보가 min_candidates 미만이면 relax_order 순서로 조건을 푼다.
+    질의 임베딩을 만들 수 없으면(Gemini 장애) 키워드 검색으로 대체한다 (AI-REQ-02, AC-006)."""
     cfg = config()["search"]
     n = n or cfg["candidates_n"] * min(cond.days, config()["course"]["max_days"])  # 다일 일정은 날짜 수만큼
-    vec = embed([cond.query], task="RETRIEVAL_QUERY")[0]
-    hits, notices = _query(vec, cond, n), []
+    notices = []
+    try:
+        vec = embed([cond.query], task="RETRIEVAL_QUERY")[0]
+        _query_fn = _query
+    except Exception as e:
+        log.warning("질의 임베딩 실패, 키워드 검색으로 대체: %s", type(e).__name__)
+        vec, notices = None, ["AI 검색을 쓸 수 없어 키워드와 조건으로 찾았습니다."]
+        _query_fn = lambda v, c, k: _keyword_query(c, k)  # noqa: E731
+    hits = _query_fn(vec, cond, n)
     for step in cfg["relax_order"]:
         if len(hits) >= cfg["min_candidates"]:
             break
@@ -79,7 +109,7 @@ def search(cond: Conditions, n: int | None = None, embed=embed_texts) -> tuple[l
             notices.append("조건에 맞는 곳이 적어 부산 전체에서 다시 찾았습니다.")
         else:
             continue  # open_hours: 운영시간을 아직 파싱하지 않아 필터가 없다
-        hits = _query(vec, cond, n)
+        hits = _query_fn(vec, cond, n)
     if len(hits) < cfg["min_candidates"]:
         notices.append("조건에 맞는 장소를 충분히 찾지 못했습니다. 조건을 조금 넓혀 볼까요?")
     return hits, notices

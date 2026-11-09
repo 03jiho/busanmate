@@ -15,6 +15,14 @@ def fake_embed(texts, task):
     return [[0.01] * 768 for _ in texts]
 
 
+def test_keyword_fallback_when_embedding_fails():  # AC-006: Gemini 장애여도 DB로 후보를 찾는다
+    def down(texts, task):
+        raise RuntimeError("gemini down")
+    hits, notices = search(Conditions(query="해수욕장 바다", gu=["해운대구"]), embed=down)
+    assert len(hits) >= 2 and all(p["gu"] == "해운대구" for p in hits)
+    assert "해수욕장" in hits[0]["name"] + (hits[0]["description"] or "") and any("키워드" in n for n in notices)
+
+
 def test_filters_are_applied():
     hits, notices = search(Conditions(query="박물관", gu=["영도구"], categories=["문화시설"]), embed=fake_embed)
     assert hits and not notices
