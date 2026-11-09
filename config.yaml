@@ -101,7 +101,7 @@ weather:                            # COMP-07, FR-004
   source_label: 기상청 단기예보 (공공데이터포털)
   license: 공공누리 제1유형 (출처 표시)
   operation: getVilageFcst          # KMA_FORECAST_URL 서비스 경로 뒤에 붙인다
-  grid: {nx: 98, ny: 76}            # ponytail: 부산 전체를 시청 격자 하나로 본다, 구별 차이가 크면 구별 격자로
+  default_location: {lat: 35.1798, lng: 129.0750}  # 후보가 없을 때 쓸 위치(부산시청 → 격자 98, 76)
   day_hours: [9, 21]                # 이 시간대 강수확률의 최댓값을 그날 값으로
 
 kakao:

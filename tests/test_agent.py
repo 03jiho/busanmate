@@ -42,7 +42,9 @@ class FakeLLM:
 @pytest.fixture
 def fake(monkeypatch):
     monkeypatch.setattr(places_tool, "search", lambda cond, n=None: ([dict(c) for c in CANDS], []))
-    monkeypatch.setattr(weather, "forecast", lambda: {date(2026, 11, 7): 80})
+    grids = []
+    monkeypatch.setattr(weather, "forecast", lambda nx, ny: grids.append((nx, ny)) or {date(2026, 11, 7): 80})
+    monkeypatch.setattr(weather, "_grids_seen", grids, raising=False)
     monkeypatch.setattr(map_tool, "kakao_leg", lambda a, b: {"mode": "taxi", "minutes": 9, "meters": 3000,
                                                              "estimated": False, "taxi_fare": 5000})
     monkeypatch.setattr(REGISTRY["get_festivals"], "run", lambda args, ctx: ToolResult(ok=True, updates={"festivals": []}))
@@ -85,6 +87,12 @@ def test_weather_helpers():
     assert weather.base_time(datetime(2026, 11, 4, 14, 20)) == ("20261104", "1400")
 
 
+@pytest.mark.parametrize("lat, lng, grid", [(35.1798, 129.0750, (98, 76)), (37.5665, 126.9780, (60, 127)),
+                                            (33.4996, 126.5312, (53, 38))])
+def test_latlon_to_grid_matches_kma(lat, lng, grid):  # 부산시청·서울시청·제주시청의 기상청 공식 격자
+    assert weather.latlon_to_grid(lat, lng) == grid
+
+
 def test_build_course_before_search_is_rejected():
     res = REGISTRY["build_course"].call({}, {"conditions": None})
     assert not res.ok and "search_places" in res.data["error"]
@@ -92,7 +100,7 @@ def test_build_course_before_search_is_rejected():
 
 def test_course_flow(fake):
     sid = str(uuid.uuid4())
-    llm = fake(FakeLLM({"intent": "course", "query": "바다 산책", "start_date": "2026-11-07", "days": 1},
+    llm = fake(FakeLLM({"intent": "course", "query": "바다 산책", "gu": ["중구"], "start_date": "2026-11-07", "days": 1},
                        plan=[[("search_places", {}), ("get_weather", {}), ("get_festivals", {}), ("build_course", {})],
                              [("get_route_times", {})]]))
     r = chat(sid, "이번 토요일 바다 코스")
@@ -104,19 +112,31 @@ def test_course_flow(fake):
     assert {s["place_id"] for s in r["sources"] if "place_id" in s} == {i["place_id"] for i in items}
     assert r["course"]["days"][0]["rain_prob"] == 80 and session.get(sid)["last_course"]
     assert all(c is not None for c in llm.prompts)
+    lat, lng = sum(c["lat"] for c in CANDS) / len(CANDS), sum(c["lng"] for c in CANDS) / len(CANDS)
+    assert weather._grids_seen == [weather.latlon_to_grid(lat, lng)]  # 후보 중심 좌표의 격자로 예보 조회
 
 
-def test_asks_date_then_continues(fake):
+@pytest.mark.parametrize("parsed, expected", [
+    ({}, query_parser.ASK_BOTH),                                          # 지역·날짜 둘 다 없음
+    ({"gu": ["수영구"]}, query_parser.ASK_DATE),                            # 날짜만 없음
+    ({"start_date": "2026-11-07"}, query_parser.ASK_REGION),              # 지역만 없음
+    ({"start_date": "2026-11-07", "region_any": True}, None),             # "부산 전체"면 묻지 않는다
+])
+def test_course_asks_for_missing_region_or_date(fake, parsed, expected):
     sid = str(uuid.uuid4())
-    fake(FakeLLM({"intent": "course", "query": "바다"}))
+    fake(FakeLLM({"intent": "course", "query": "바다", **parsed}, plan=[[("search_places", {})]]))
     r = chat(sid, "바다 코스 추천해줘")
-    assert r["answer"] == query_parser.ASK_DATE and r["course"] is None
-    assert session.get(sid)["pending"] == "바다 코스 추천해줘"
+    if expected:
+        assert r["answer"] == expected and r["course"] is None
+        assert session.get(sid)["pending"] == "바다 코스 추천해줘"  # 다음 답과 이어 붙여 다시 해석한다
+    else:
+        assert r["tool_calls"] and session.get(sid)["pending"] is None
 
 
 def test_tool_call_limit(fake):
     sid = str(uuid.uuid4())
-    fake(FakeLLM({"intent": "course", "query": "바다", "start_date": "2026-11-07"}, plan=[[("search_places", {})]] * 20))
+    fake(FakeLLM({"intent": "course", "query": "바다", "gu": ["중구"], "start_date": "2026-11-07"},
+                 plan=[[("search_places", {})]] * 20))
     assert len(chat(sid, "토요일 바다 코스")["tool_calls"]) == 6  # 마지막 단계에 닿지 않아도 6회에서 멈춘다
 
 

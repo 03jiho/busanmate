@@ -14,6 +14,8 @@ BUSAN_GU = ["중구", "서구", "동구", "영도구", "부산진구", "동래�
             "금정구", "강서구", "연제구", "수영구", "사상구", "기장군"]
 WEEKDAYS = "월화수목금토일"
 ASK_DATE = "언제 방문하실 예정인가요? 날짜를 알려 주시면 날씨와 축제까지 반영해 드릴게요. (예: 이번 토요일, 11월 20일부터 1박 2일)"
+ASK_REGION = "어느 지역을 중심으로 볼까요? (예: 해운대, 남포동, 서면, 기장, 부산 전체)"
+ASK_BOTH = "어느 지역을 중심으로, 언제 방문하실 예정인가요? (예: 이번 토요일 해운대, 11월 20일부터 1박 2일 부산 전체)"
 
 
 def categories() -> list[str]:
@@ -29,6 +31,7 @@ def schema() -> dict:
     return {"type": "object", "required": ["intent", "query"], "properties": {
         "intent": {"type": "string", "enum": ["search", "course", "edit", "chitchat"]},
         "gu": {"type": "array", "items": {"type": "string", "enum": BUSAN_GU}},
+        "region_any": {"type": "boolean"},
         "categories": {"type": "array", "items": {"type": "string", "enum": categories()}},
         "theme": {"type": "string", "enum": themes()},
         "companion": {"type": "string"},
@@ -97,12 +100,12 @@ def parse(message: str, today: date, prefs: dict | None = None, has_course: bool
     except ValueError:
         start = None
     clarify, edit = None, raw.get("edit") if intent == "edit" else None
-    if intent == "course" and start is None:
-        if fallback:
-            start = today
-            notices.append("방문 날짜를 읽지 못해 오늘 기준으로 일정을 짰습니다.")
-        else:
-            clarify = ASK_DATE
+    no_region = not cond.gu and not raw.get("region_any")  # "부산 전체", "어디든"이면 지역을 묻지 않는다
+    if intent == "course" and fallback and start is None:
+        start = today
+        notices.append("방문 날짜를 읽지 못해 오늘 기준으로 일정을 짰습니다.")
+    elif intent == "course" and (start is None or no_region):
+        clarify = ASK_BOTH if start is None and no_region else (ASK_DATE if start is None else ASK_REGION)
     elif intent == "edit" and not has_course:
         clarify = "수정할 코스가 아직 없습니다. 먼저 코스를 추천받아 주세요."
     elif edit and edit.get("op") in ("replace", "remove") and not edit.get("index"):
