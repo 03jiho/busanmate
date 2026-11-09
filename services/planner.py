@@ -1,6 +1,7 @@
 """Scorer · RoutePlanner (COMP-06, FR-004~006, FR-014). LLM 없이 결정적으로 계산한다 (AI-REQ-04)."""
 import itertools
 import math
+from collections import Counter
 
 from services.route import estimate_leg, haversine_km, road_km
 from settings import config
@@ -94,12 +95,19 @@ def plan_day(scored: list[dict], k: int, hours: float, mode: str, check_variety:
     elif mode == "walk":
         notices.append("걸어서 다닐 만한 거리에 후보가 적어 먼 구간이 포함됩니다.")
     seq = select(scored, k)
+    spare = [p for p in scored if p not in seq]  # 점수 순 교체 후보
     while True:
         ordered = best_order(seq, check_variety)
-        if ordered is None:  # 남은 장소가 한 분류뿐이라 3연속을 피할 수 없음
-            ordered = best_order(seq, False)
-            if "같은 분류" not in " ".join(notices):
-                notices.append("조건에 맞는 장소가 한 분류에 몰려 같은 분류 장소가 이어집니다.")
+        if ordered is None:
+            # 한 분류가 많아 3연속을 피할 순서가 없다(FR-006): 그 분류의 최저점 장소를 다른 분류 후보로 바꾸고,
+            # 후보가 없으면 뺀다. 2곳 이하는 항상 조건을 만족하므로 반복은 끝난다.
+            top = Counter(p["category"] for p in seq).most_common(1)[0][0]
+            seq.remove(min((p for p in seq if p["category"] == top), key=lambda p: p["score"]))
+            alt = next((p for p in spare if p["category"] != top), None)
+            if alt:
+                seq.append(alt)
+                spare.remove(alt)
+            continue
         if day_minutes(ordered, mode) <= hours * 60 or len(ordered) <= min_k:
             break
         seq.remove(min(seq, key=lambda p: p["score"]))
