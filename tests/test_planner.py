@@ -2,9 +2,10 @@ import random
 
 import pytest
 
-from services.planner import build_course, day_minutes, path_km, places_per_day
+from services.planner import build_course, day_minutes, path_km, places_per_day, score
 from services.route import estimate_leg
 from services.search import Conditions
+from settings import config
 
 CATS = ["해변", "문화시설", "음식점", "공원·자연"]
 
@@ -114,6 +115,51 @@ def test_walk_only_never_returns_long_walk():
                           Conditions(query="x", mode="walk"))
     legs = [i["leg_to_next"] for d in course["days"] for i in d["items"] if i["leg_to_next"]]
     assert legs and all(lg["mode"] == "taxi" or lg["minutes"] <= 30 for lg in legs)
+
+
+def _mixed(n_food: int, n_other: int) -> list[dict]:
+    """음식점이 유사도 상위를 차지하는 후보 ("맛집이랑 자연"에서 음식점이 줄줄이 뽑히던 상황)."""
+    food = [{"place_id": i, "name": f"f{i}", "category": "음식점", "gu": "중구", "lat": 35.10 + i * 0.001,
+             "lng": 129.03, "indoor": True, "sim": 0.95 - i * 0.01} for i in range(n_food)]
+    other = [{"place_id": 100 + i, "name": f"o{i}", "category": CATS[i % 2], "gu": "중구", "lat": 35.10 + i * 0.001,
+              "lng": 129.031, "indoor": False, "sim": 0.6 - i * 0.01} for i in range(n_other)]
+    return food + other
+
+
+@pytest.mark.parametrize("theme,cap", [("맛집", 3), ("자연", 2), (None, 2)])
+def test_food_cap_and_no_three_meals_in_a_row(theme, cap):
+    items = build_course(_mixed(8, 6), Conditions(query="x", theme=theme))["days"][0]["items"]
+    cats = [i["category"] for i in items]
+    assert len(items) == 6 and cats.count("음식점") <= cap
+    assert all(not (a == b == c == "음식점") for a, b, c in zip(cats, cats[1:], cats[2:]))
+
+
+def test_mixed_categories_keep_food_cap():  # 해석기가 "맛집이랑 자연"을 categories=[음식점, 공원·자연]으로 줄 때
+    items = build_course(_mixed(8, 6), Conditions(query="x", theme="맛집", categories=["음식점", "공원·자연"]))
+    cats = [i["category"] for i in items["days"][0]["items"]]
+    assert cats.count("음식점") <= 3 and all(not (a == b == c == "음식점") for a, b, c in zip(cats, cats[1:], cats[2:]))
+
+
+def test_same_name_with_spacing_is_picked_once():  # 원천 중복 "오륙도 가원" / "오륙도가원"
+    cands_ = _mixed(0, 6) + [{**_mixed(1, 0)[0], "place_id": 50, "name": "오륙도 가원"},
+                             {**_mixed(1, 0)[0], "place_id": 51, "name": "오륙도가원"}]
+    names = [i["name"].replace(" ", "") for i in build_course(cands_, Conditions(query="x"))["days"][0]["items"]]
+    assert names.count("오륙도가원") <= 1
+
+
+def test_food_only_request_has_no_cap():  # "음식점만"처럼 분류를 직접 지정하면 상한 없음
+    items = build_course(_mixed(8, 0), Conditions(query="x", categories=["음식점"]))["days"][0]["items"]
+    assert [i["category"] for i in items].count("음식점") == 6
+
+
+def test_sea_theme_credits_places_near_beach():
+    """바다 테마: 해변 분류가 아니어도 해변 1km 안이면 가산점, 내륙은 없음 (해변이 적은 지역의 바다 코스)."""
+    coast = {"place_id": 1, "name": "해안공원", "category": "공원·자연", "gu": "수영구", "lat": 35.155, "lng": 129.118,
+             "indoor": False, "sim": 0.5}
+    inland = {**coast, "place_id": 2, "name": "내륙공원", "lat": 35.19, "lng": 129.10}
+    by_id = {p["place_id"]: p["score"] for p in score([coast, inland], "바다", near_points=[(35.153, 129.118)])}
+    s = config()["score"]
+    assert by_id[1] - by_id[2] > s["w_pref"] - s["w_dist"]  # 차이는 가산점(0.3)에서 거리항을 뺀 것보다 크다
 
 
 def test_walk_course_keeps_places_and_taxis_far_legs():

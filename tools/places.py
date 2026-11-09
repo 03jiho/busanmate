@@ -1,12 +1,15 @@
 """장소 검색·코스 구성·코스 수정 도구 (FR-002, FR-006, FR-012). 계산은 모두 코드가 한다 (AI-REQ-04)."""
 import copy
+import logging
 from dataclasses import replace
 
 from services.planner import best_order, build_course, items_for
 from services.route import haversine_km
-from services.search import search
+from services.search import search, theme_points
 from settings import config
 from tools.base import BaseTool, ToolResult, register
+
+log = logging.getLogger("tools")
 
 
 def _brief(p: dict) -> dict:
@@ -42,7 +45,12 @@ class BuildCourse(BaseTool):
     def run(self, args, ctx):
         if not ctx.get("candidates"):
             return ToolResult(ok=False, data={"error": "후보가 없습니다. search_places를 먼저 호출하세요."})
-        course = build_course(ctx["candidates"], ctx["conditions"], ctx.get("rain_by_day"))
+        try:  # 테마 기준 장소(바다 → 해변) 좌표. 못 읽으면 분류만으로 가산점을 준다
+            near = theme_points(ctx["conditions"].theme)
+        except Exception as e:
+            log.warning("theme_points 실패: %s", type(e).__name__)
+            near = []
+        course = build_course(ctx["candidates"], ctx["conditions"], ctx.get("rain_by_day"), near)
         summary = [{"day": d["day"], "places": [i["name"] for i in d["items"]]} for d in course["days"]]
         return ToolResult(ok=bool(course["days"]), data={"days": summary}, notices=course["notices"],
                           updates={"course": course})

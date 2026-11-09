@@ -41,6 +41,16 @@ def fetch_places(ids: list[int]) -> dict[int, dict]:
         return {r["place_id"]: r for r in cur.fetchall()}
 
 
+def theme_points(theme: str | None) -> list[tuple[float, float]]:
+    """config theme_near의 기준 분류 장소 좌표(예: 바다 → 활성 해변 장소). 코스 점수의 테마 가산점용."""
+    near = (config()["preferences"].get("theme_near") or {}).get(theme)
+    if not near:
+        return []
+    with db.connect() as conn:
+        rows = conn.execute("SELECT lat, lng FROM place WHERE is_active AND category = %s", (near["category"],))
+        return [(float(a), float(b)) for a, b in rows.fetchall()]
+
+
 def source_of(p: dict) -> dict:
     return {"place_id": p["place_id"], "name": p["name"], "label": config()["sources"][p["source"]]["label"],
             "url": p["url"], "license": p["license"], "image": p.get("image")}

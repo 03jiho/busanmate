@@ -88,6 +88,7 @@ course:                             # COMP-06, FR-006, FR-014
   day_radius_km: 8                  # 초안: auto/taxi일 때 같은 기준의 반경
   walk_max_leg_min: 30              # 초안: 도보만일 때 구간 하나의 최대 도보 시간
   max_same_category_run: 2          # 같은 분류 3곳 연속 금지
+  food_per_day: {default: 2, food_theme: 3}  # 초안: 하루 음식점 상한(끼니 수). 분류를 음식점으로 직접 지정하면 상한 없음
 
 preferences:                        # FR-005 선호 테마 → 가산점을 줄 분류 (pref 항)
   theme_categories:
@@ -97,6 +98,10 @@ preferences:                        # FR-005 선호 테마 → 가산점을 줄 
     맛집: [음식점]
     쇼핑·시장: [시장, 거리·마을]
     핫플: [관광지, 거리·마을]
+  theme_near:                       # 이 분류 장소에서 km 안이면 분류가 달라도 테마 가산점 (해변 옆 공원·카페·산책로 등)
+    # ponytail: 해변 대표 좌표 1점 + 이름 키워드라 놓치는 해안 장소가 있다 → 해안선 데이터가 생기면 교체
+    바다: {category: 해변, km: 1.0, keywords: [해수욕장, 해변, 해안, 바다, 해양, 등대, 포구, 흰여울, 태종대, 이기대,
+                                             오륙도, 용궁사, 오랑대, 송도, 다대포, 민락, 광안, 청사포, 블루라인, 스카이워크]}
 
 weather:                            # COMP-07, FR-004
   rain_prob_threshold: 60
