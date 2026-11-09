@@ -141,4 +141,5 @@ def handle_chat(session_id: str, message: str, today: date | None = None) -> dic
     """API-001 응답: {answer, conditions, course, sources, notices, places, intent, tool_calls}."""
     out = GRAPH.invoke({"session_id": session_id, "message": message, "today": today or datetime.now(KST).date()})
     return {**out["result"], "conditions": asdict(out["conditions"]) if out.get("conditions") else None,
+            "dates": [d.isoformat() for d in out.get("dates") or []],  # UI 조건 칩용 (해석된 방문 날짜)
             "intent": out.get("intent"), "tool_calls": out.get("tool_log", [])}

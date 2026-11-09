@@ -33,13 +33,17 @@ def fetch_places(ids: list[int]) -> dict[int, dict]:
     if not ids:
         return {}
     with db.connect() as conn, conn.cursor(row_factory=dict_row) as cur:
-        cur.execute(f"SELECT {', '.join(PLACE_FIELDS)} FROM place WHERE is_active AND place_id = ANY(%s)", (list(ids),))
+        # 썸네일: place_image는 이용 조건이 확인된 이미지만 적재한다(NFR-007), 장소당 첫 장
+        image = ("(SELECT json_build_object('url', i.url, 'license', i.license) FROM place_image i "
+                 "WHERE i.place_id = place.place_id ORDER BY i.image_id LIMIT 1) AS image")
+        cur.execute(f"SELECT {', '.join(PLACE_FIELDS)}, {image} FROM place WHERE is_active AND place_id = ANY(%s)",
+                    (list(ids),))
         return {r["place_id"]: r for r in cur.fetchall()}
 
 
 def source_of(p: dict) -> dict:
     return {"place_id": p["place_id"], "name": p["name"], "label": config()["sources"][p["source"]]["label"],
-            "url": p["url"], "license": p["license"]}
+            "url": p["url"], "license": p["license"], "image": p.get("image")}
 
 
 def _where(c: Conditions) -> dict | None:
