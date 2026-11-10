@@ -52,8 +52,8 @@ def fake(monkeypatch):
     monkeypatch.setattr(map_tool, "kakao_leg", lambda a, b: {"mode": "taxi", "minutes": 9, "meters": 3000,
                                                              "estimated": False, "taxi_fare": 5000})
     monkeypatch.setattr(REGISTRY["get_festivals"], "run", lambda args, ctx: ToolResult(ok=True, updates={"festivals": []}))
-    monkeypatch.setattr(response, "fetch_places", lambda ids: {c["place_id"]: c for c in CANDS + [YONG] if c["place_id"] in ids})
-    monkeypatch.setattr(places_tool, "fetch_places", lambda ids: {c["place_id"]: c for c in CANDS + [YONG] if c["place_id"] in ids})
+    monkeypatch.setattr(response, "fetch_places", lambda ids: {c["place_id"]: c for c in CANDS + [YONG] + CAFES + INDOOR if c["place_id"] in ids})
+    monkeypatch.setattr(places_tool, "fetch_places", lambda ids: {c["place_id"]: c for c in CANDS + [YONG] + CAFES + INDOOR if c["place_id"] in ids})
     monkeypatch.setattr(query_parser, "all_place_names", lambda: [{"place_id": c["place_id"], "name": c["name"],
                                                                    "gu": c["gu"]} for c in CANDS + [YONG] + NAMES])
 
@@ -235,3 +235,71 @@ def test_llm_down_mixed_known_and_unknown_places(fake):
     r = chat(sid, "중구 코스, 용두산공원이랑 부산 아쿠아랜드 포함")
     assert r["notices"][0].startswith("'부산 아쿠아랜드'는 공공데이터에서 찾지 못해")
     assert "용두산공원" in [i["name"] for i in r["course"]["days"][0]["items"]]
+
+
+# --- 코스 제자리 수정 ("코스 고치기" 버튼: edit.kind) ---
+CAFES = [{**CANDS[2], "place_id": 400 + i, "name": f"카페{i}", "category": "카페", "indoor": True,
+          "lat": 35.105 + i * 0.01, "lng": 129.035} for i in range(3)]
+INDOOR = [{**CANDS[1], "place_id": 500, "name": "실내전시관", "lat": 35.111, "lng": 129.041}]
+
+
+@pytest.fixture
+def two_days(fake, monkeypatch):
+    monkeypatch.setattr(places_tool, "places_where",
+                        lambda category=None, indoor=None: CAFES if category == "카페" else INDOOR + CAFES)
+    sid = str(uuid.uuid4())
+    fake(FakeLLM({"intent": "course", "query": "역사", "gu": ["중구"], "start_date": "2026-11-07", "days": 2},
+                 plan=[[("search_places", {}), ("get_weather", {}), ("get_festivals", {}), ("build_course", {})],
+                       [("get_route_times", {})]]))
+    first = chat(sid, "다음 주 토요일부터 1박 2일 중구 역사 여행")
+    assert len(first["course"]["days"]) == 2
+    return sid, first
+
+
+def _ids(r):
+    return [[i["place_id"] for i in d["items"]] for d in r["course"]["days"]]
+
+
+def test_cafe_edit_keeps_two_days_and_places(two_days):
+    """1박 2일에서 "카페 추가": 2일 구조와 기존 장소·순서는 그대로, 한 날에 카페 하나만 점심 무렵에 들어간다."""
+    sid, first = two_days
+    r = orchestrator.handle_chat(sid, "카페 추가", today=TODAY, edit={"kind": "cafe"})
+    before, after = _ids(first), _ids(r)
+    assert len(after) == 2
+    changed = [d for d in range(2) if before[d] != after[d]]
+    assert len(changed) == 1
+    d = changed[0]
+    added = [i for i in after[d] if i not in before[d]]
+    assert len(added) == 1 and added[0] in {c["place_id"] for c in CAFES}
+    assert [i for i in after[d] if i != added[0]] == before[d]          # 기존 장소 순서 유지
+    from services.planner import lunch_slot
+    day = first["course"]["days"][d]
+    assert after[d].index(added[0]) == lunch_slot(day["items"], day.get("start"))  # 점심 무렵 자리
+    assert after[1 - d] == before[1 - d]                                # 다른 날은 그대로
+    assert r["conditions"] == first["conditions"] and r["dates"] == first["dates"]  # 조건 칩·일차 탭 그대로
+    assert any("카페" in n or "넣었어요" in n for n in r["notices"])
+
+
+def test_indoor_edit_replaces_one_outdoor_in_place(two_days):
+    sid, first = two_days
+    r = orchestrator.handle_chat(sid, "실내로 바꾸기", today=TODAY, edit={"kind": "indoor"})
+    before, after = _ids(first), _ids(r)
+    diffs = [(d, k) for d in range(2) for k, (a, b) in enumerate(zip(before[d], after[d])) if a != b]
+    assert len(diffs) == 1 and [len(x) for x in after] == [len(x) for x in before]  # 한 자리만, 같은 위치에서
+    d, k = diffs[0]
+    assert after[d][k] == 500 and not next(c for c in CANDS if c["place_id"] == before[d][k])["indoor"]
+
+
+def test_shorter_edit_removes_one_and_keeps_order(two_days):
+    sid, first = two_days
+    r = orchestrator.handle_chat(sid, "더 짧게", today=TODAY, edit={"kind": "shorter"})
+    before, after = _ids(first), _ids(r)
+    assert len(after) == 2 and sum(map(len, before)) - sum(map(len, after)) == 1
+    for b, a in zip(before, after):
+        assert [i for i in b if i in a] == a  # 남은 장소 순서 그대로
+
+
+def test_edit_button_without_course_asks_first(fake):
+    fake(FakeLLM({}))
+    r = orchestrator.handle_chat(str(uuid.uuid4()), "카페 추가", today=TODAY, edit={"kind": "cafe"})
+    assert "먼저 코스를" in r["answer"] and r["course"] is None

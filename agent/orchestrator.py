@@ -3,7 +3,7 @@ parse → (되묻기·잡담이면 바로 respond) → agent ⇄ tools (턴당 �
 LLM은 도구만 고르고, 점수화·경로·시간 계산은 도구 안의 코드가 한다."""
 import json
 import logging
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import date, datetime
 from typing import Any, TypedDict
 
@@ -14,6 +14,7 @@ from agent import prompt, session
 from agent.query_parser import parse
 from agent.response import build_response
 from services.llm import ToolCall, get_llm
+from services.search import Conditions
 from settings import config
 from tools.base import REGISTRY, ToolResult, declarations
 from tools.weather import KST
@@ -46,24 +47,43 @@ class State(TypedDict, total=False):
     notices: list
     sources: list
     result: dict
+    action: dict | None
 
 
 def _max_calls() -> int:
     return config()["agent"]["max_tool_calls_per_turn"]
 
 
+EDIT_OPS = {"cafe": "add", "indoor": "replace", "shorter": "remove"}
+
+
 def parse_node(state: State) -> dict:
     s = session.get(state["session_id"])
+    fresh = {"candidates": [], "festivals": [], "rain_by_day": None, "messages": [], "pending": [], "tool_calls": 0,
+             "tool_log": [], "sources": [], "llm_down": False}
+    action = state.get("action")
+    if action:  # "코스 고치기" 버튼: 문장을 해석하지 않고 직전 코스·조건·날짜로 제자리 수정 (FR-012)
+        if not s["last_course"]:
+            return {**fresh, "intent": "edit", "conditions": s["last_conditions"] or Conditions(query=state["message"]),
+                    "dates": [], "edit": None, "notices": [], "course": None,
+                    "clarify": "수정할 코스가 아직 없습니다. 먼저 코스를 추천받아 주세요."}
+        return {**fresh, "intent": "edit", "conditions": s["last_conditions"], "dates": s["last_dates"],
+                "edit": {"op": EDIT_OPS[action["kind"]], "kind": action["kind"], "day": action.get("day")},
+                "clarify": None, "notices": [], "course": s["last_course"]}
     msg = f"{s['pending']} {state['message']}" if s["pending"] else state["message"]  # 되물은 뒤의 답이면 이어 붙인다
     p = parse(msg, state["today"], s["preferences"], has_course=bool(s["last_course"]))
     s["pending"] = msg if p["clarify"] else None
-    return {"intent": p["intent"], "conditions": p["conditions"], "dates": p["dates"], "edit": p["edit"],
-            "clarify": p["clarify"], "notices": p["notices"], "course": s["last_course"] if p["intent"] == "edit" else None,
-            "candidates": [], "festivals": [], "rain_by_day": None, "messages": [], "pending": [], "tool_calls": 0,
-            "tool_log": [], "sources": [], "llm_down": False}
+    cond, dates = p["conditions"], p["dates"]
+    if p["intent"] == "edit" and s["last_conditions"]:  # 대화로 고칠 때도 직전 코스의 조건·날짜를 그대로 쓴다
+        cond, dates = replace(s["last_conditions"], must=p["conditions"].must), s["last_dates"]
+    return {**fresh, "intent": p["intent"], "conditions": cond, "dates": dates, "edit": p["edit"],
+            "clarify": p["clarify"], "notices": p["notices"], "course": s["last_course"] if p["intent"] == "edit" else None}
 
 
 def agent_node(state: State) -> dict:
+    if state.get("action"):  # 버튼 수정은 할 일이 정해져 있다: LLM 없이 edit_course → get_route_times
+        plan = [n for n in DEFAULT_PLAN["edit"] if n not in state["tool_log"]]
+        return {"pending": [ToolCall(n, dict(state["edit"]) if n == "edit_course" else {}) for n in plan]}
     system = prompt("agent").format(
         intent=state["intent"], conditions=json.dumps(asdict(state["conditions"]), ensure_ascii=False),
         dates=", ".join(map(str, state["dates"])) or "없음",
@@ -107,7 +127,7 @@ def respond_node(state: State) -> dict:
     result = build_response(state)
     s = session.get(state["session_id"])
     if result.get("course"):
-        s["last_course"], s["last_conditions"] = result["course"], state["conditions"]
+        s["last_course"], s["last_conditions"], s["last_dates"] = result["course"], state["conditions"], state["dates"]
     log.info("turn intent=%s tools=%s", state.get("intent"), state.get("tool_log"))  # 질의 원문은 남기지 않는다
     return {"result": result}
 
@@ -137,9 +157,11 @@ def _graph():
 GRAPH = _graph()
 
 
-def handle_chat(session_id: str, message: str, today: date | None = None) -> dict:
-    """API-001 응답: {answer, conditions, course, sources, notices, places, intent, tool_calls}."""
-    out = GRAPH.invoke({"session_id": session_id, "message": message, "today": today or datetime.now(KST).date()})
+def handle_chat(session_id: str, message: str, today: date | None = None, edit: dict | None = None) -> dict:
+    """API-001 응답: {answer, conditions, course, sources, notices, places, intent, tool_calls}.
+    edit({kind: cafe|indoor|shorter, day?})가 있으면 문장 해석 없이 직전 코스를 제자리에서 고친다."""
+    out = GRAPH.invoke({"session_id": session_id, "message": message, "today": today or datetime.now(KST).date(),
+                        "action": edit})
     return {**out["result"], "conditions": asdict(out["conditions"]) if out.get("conditions") else None,
             "dates": [d.isoformat() for d in out.get("dates") or []],  # UI 조건 칩용 (해석된 방문 날짜)
             "intent": out.get("intent"), "tool_calls": out.get("tool_log", [])}

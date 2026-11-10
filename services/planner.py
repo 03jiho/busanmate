@@ -179,6 +179,48 @@ def kmeans(points: list[dict], k: int, iters: int = 20) -> list[list[dict]]:
     return groups
 
 
+def _minutes(hhmm: str) -> int:
+    h, m = map(int, hhmm.split(":"))
+    return h * 60 + m
+
+
+def arrivals(items: list[dict], start: str | None = None) -> list[tuple[int, int]]:
+    """장소별 (도착, 출발) 분. 출발 시각 + 체류 + 구간 이동 (화면의 방문 예정 시각과 같은 계산)."""
+    t, out = _minutes(start or config()["course"]["day_start"]), []
+    for i in items:
+        leave = t + (i.get("stay_min") or config()["course"]["default_stay_min"])
+        out.append((t, leave))
+        t = leave + (i["leg_to_next"]["minutes"] if i.get("leg_to_next") else 0)
+    return out
+
+
+def lunch_slot(items: list[dict], start: str | None = None) -> int:
+    """카페를 넣을 자리(이 인덱스 앞에 넣는다): 점심 시간대에 도착하는 식당 바로 다음,
+    없으면 출발 시각이 점심 시간대 가운데에 가장 가까운 장소 다음."""
+    lo, hi = map(_minutes, config()["course"]["lunch_window"])
+    times, food = arrivals(items, start), config()["classify"]["food"]["category"]
+    for i, (item, (arrive, _)) in enumerate(zip(items, times)):
+        if item["category"] == food and lo <= arrive <= hi:
+            return i + 1
+    mid = (lo + hi) / 2
+    return min(range(1, len(items) + 1), key=lambda i: abs(times[i - 1][1] - mid))
+
+
+def detour_km(prev: dict | None, p: dict, nxt: dict | None) -> float:
+    """prev와 nxt 사이에 p를 넣을 때 늘어나는 이동거리."""
+    if prev and nxt:
+        return road_km(prev, p) + road_km(p, nxt) - road_km(prev, nxt)
+    return road_km(prev or nxt, p) if (prev or nxt) else 0.0
+
+
+def removal_saving(items: list[dict], i: int, mode: str) -> int:
+    """i번째 장소를 빼면 줄어드는 분(체류 + 앞뒤 구간 - 새로 생기는 구간)."""
+    prev, nxt = items[i - 1] if i > 0 else None, items[i + 1] if i + 1 < len(items) else None
+    saved = items[i].get("stay_min") or config()["course"]["default_stay_min"]
+    saved += sum(estimate_leg(a, b, mode)["minutes"] for a, b in ((prev, items[i]), (items[i], nxt)) if a and b)
+    return saved - (estimate_leg(prev, nxt, mode)["minutes"] if prev and nxt else 0)
+
+
 def items_for(seq: list[dict], mode: str) -> list[dict]:
     return [{"order": i + 1, "place_id": p["place_id"], "name": p["name"], "category": p["category"],
              "gu": p["gu"], "lat": p["lat"], "lng": p["lng"], "reason": None,

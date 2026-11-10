@@ -54,6 +54,9 @@ ingest:
 # indoor: true/false/null(불명)
 classify:
   food: {category: 음식점, indoor: true}
+  # 맛집 데이터 중 카페: 이름이나 대표 메뉴에 이 말이 있으면 음식점이 아니라 카페 (코스 수정의 "카페 추가")
+  cafe: {category: 카페, indoor: true, keywords: [카페, 커피, 디저트, 베이커리, 브레드, 로스터, 제과, 다방, 티하우스, cafe, coffee],
+         menu_keywords: [커피, 아메리카노, 라떼, 디저트, 케이크, 빙수]}
   rules:
     - {category: 시장, indoor: null, keywords: [시장, 지하도상가]}
     - {category: 해변, indoor: false, names: [해운대, 청사포와 미포, 동백섬], keywords: [해수욕장, 해변, 해안, 해파랑길]}
@@ -83,6 +86,7 @@ course:                             # COMP-06, FR-006, FR-014
   max_days: 3
   default_stay_min: 60              # 초안: 장소당 평균 체류
   day_start: "10:00"                # 초안: 하루 출발 시각 (화면의 방문 예정 시각 계산 기준)
+  lunch_window: ["11:30", "14:00"]  # 초안: "카페 추가"는 이 시간대의 식당 다음, 없으면 가운데 시각에 가까운 틈에 넣는다
   default_move_min: 20              # 초안: K 계산용 평균 이동 시간
   walk_radius_km: 2.5               # 초안: 도보만일 때 하루 장소를 먼저 기준 장소 반경 안에서 고른다(모자라면 가까운 순)
   day_radius_km: 8                  # 초안: auto/taxi일 때 같은 기준의 반경

@@ -63,7 +63,10 @@ def to_place(row: dict, source: str) -> dict | None:
         return None
     menu = row.get("RPRSNTV_MENU", "")
     if source == "busan_food":
-        category, indoor = config()["classify"]["food"]["category"], config()["classify"]["food"]["indoor"]
+        cafe = config()["classify"]["cafe"]
+        is_cafe = any(k in name.lower() for k in cafe["keywords"]) or any(k in menu for k in cafe["menu_keywords"])
+        kind = cafe if is_cafe else config()["classify"]["food"]
+        category, indoor = kind["category"], kind["indoor"]
     else:
         category, indoor = classify(name)
     hours = {k: v.strip() for k, v in (("raw", row.get("USAGE_DAY_WEEK_AND_TIME", "")),

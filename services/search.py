@@ -93,6 +93,18 @@ def fetch_places(ids: list[int]) -> dict[int, dict]:
         return {r["place_id"]: r for r in cur.fetchall()}
 
 
+def places_where(category: str | None = None, indoor: bool | None = None) -> list[dict]:
+    """분류·실내 여부로 활성 장소를 읽는다 (코스 제자리 수정: 카페 추가, 실내로 바꾸기)."""
+    q, params = f"SELECT {', '.join(PLACE_FIELDS)} FROM place WHERE is_active", []
+    if category:
+        q, params = q + " AND category = %s", params + [category]
+    if indoor is not None:
+        q, params = q + " AND indoor = %s", params + [indoor]
+    with db.connect() as conn, conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(q, params)
+        return cur.fetchall()
+
+
 def theme_points(theme: str | None) -> list[tuple[float, float]]:
     """config theme_near의 기준 분류 장소 좌표(예: 바다 → 활성 해변 장소). 코스 점수의 테마 가산점용."""
     near = (config()["preferences"].get("theme_near") or {}).get(theme)

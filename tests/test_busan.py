@@ -70,3 +70,9 @@ def test_to_festival():
     f = to_festival({**ROW, "USAGE_DAY_WEEK_AND_TIME": "2026. 10. 16. ~ 10. 18."}, "busan_festival")
     assert (f["start_date"], f["end_date"]) == (date(2026, 10, 16), date(2026, 10, 18))
     assert to_festival({**ROW, "USAGE_DAY_WEEK_AND_TIME": "", "USAGE_DAY": ""}, "busan_festival") is None
+
+
+@pytest.mark.parametrize("name, menu, cat", [("모모스커피", "", "카페"), ("올드머그", "아메리카노, 라떼", "카페"),
+                                             ("연화제과", "", "카페"), ("양평칼국수 본점", "칼국수", "음식점")])
+def test_food_rows_split_cafe(name, menu, cat):  # 코스 수정 "카페 추가"용: 맛집 데이터 중 카페를 음식점과 구분
+    assert to_place({**ROW, "MAIN_TITLE": name, "RPRSNTV_MENU": menu}, "busan_food")["category"] == cat

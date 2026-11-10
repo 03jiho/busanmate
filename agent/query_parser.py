@@ -21,7 +21,8 @@ ASK_BOTH = "어느 지역을 중심으로, 언제 방문하실 예정인가요? 
 
 def categories() -> list[str]:
     c = config()["classify"]
-    return sorted({r["category"] for r in c["rules"]} | {c["food"]["category"], c["default"]["category"]})
+    return sorted({r["category"] for r in c["rules"]} | {c["food"]["category"], c["cafe"]["category"],
+                                                          c["default"]["category"]})
 
 
 def themes() -> list[str]:

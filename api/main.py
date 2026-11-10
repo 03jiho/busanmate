@@ -121,15 +121,24 @@ def _check_session(session_id: str) -> None:
 
 
 # --- API-001 ---
+class EditIn(BaseModel):
+    """화면의 "코스 고치기" 버튼: 문장 해석 없이 직전 코스를 제자리에서 고친다 (FR-012)."""
+    kind: Literal["cafe", "indoor", "shorter"]
+    day: int | None = Field(default=None, ge=1, le=3)
+
+
 class ChatIn(BaseModel):
     session_id: str = Field(pattern=SESSION_ID)
     message: str = Field(min_length=1, max_length=config()["api"]["max_message_chars"])
+    edit: EditIn | None = None
 
 
 @app.post("/api/chat")
 def chat(body: ChatIn):
     _rate_limit(body.session_id)
     log.info("chat session=%s", hashlib.sha256(body.session_id.encode()).hexdigest()[:10])
+    if body.edit:
+        return handle_chat(body.session_id, body.message.strip(), edit=body.edit.model_dump())
     return handle_chat(body.session_id, body.message.strip())
 
 

@@ -21,8 +21,8 @@ COMPANIONS = ["선택 안 함", "혼자", "친구", "연인", "가족", "부모�
 RAIN_THRESHOLD = 60  # config weather.rain_prob_threshold와 같게 (UI는 api만 호출하므로 표시용으로만 둔다)
 EXAMPLES = ["이번 토요일 해운대에서 부모님과 걷기 좋은 바다 코스", "다음 주 금요일부터 1박 2일 중구 역사·문화 여행",
             "광안리 근처 비 오는 날 갈 만한 실내 장소"]
-EDITS = {"실내로 바꾸기": "코스에서 실외 장소 하나를 실내 장소로 바꿔줘", "카페 추가": "코스에 카페 하나 추가해줘",
-         "더 짧게": "코스에서 장소 하나를 빼서 더 짧게 해줘"}  # 버튼 → 코스 수정 요청 (FR-007, edit_course)
+# 버튼 → 구조화된 수정 요청(API-001 edit.kind). 문장 해석 없이 직전 코스를 제자리에서 고친다 (FR-012, edit_course)
+EDITS = {"실내로 바꾸기": "indoor", "카페 추가": "cafe", "더 짧게": "shorter"}
 MAP_H = 480
 CSS = f"""<style>
 [data-testid="stMainBlockContainer"] {{padding-top: 2.5rem; max-width: 1180px;}}
@@ -60,9 +60,9 @@ def api(method: str, path: str, **kw) -> dict:
     return body
 
 
-def ask(text: str) -> None:
-    """버튼 콜백: 다음 실행에서 이 문장을 질문으로 보낸다."""
-    ss.queued = text
+def ask(text: str, edit: str | None = None) -> None:
+    """버튼 콜백: 다음 실행에서 이 문장을 질문으로 보낸다. edit가 있으면 코스 제자리 수정 요청으로 보낸다."""
+    ss.queued, ss.queued_edit = text, edit
 
 
 @st.cache_data(show_spinner=False)
@@ -147,8 +147,7 @@ def place_card(key: str, title: str, sub: str, reason: str | None, source: dict 
 def chips(r: dict) -> None:
     """AI가 해석한 조건(날짜·지역·동행·이동수단·테마)을 칩으로 (FR-001, 해석이 맞는지 사용자가 바로 확인)."""
     c = r.get("conditions")
-    # 수정 턴의 conditions는 수정 문장만 해석한 값이라 원래 코스 조건과 달라 보인다 → 칩을 숨긴다
-    if not c or r.get("intent") == "edit" or not (r.get("course") or r.get("places")):
+    if not c or not (r.get("course") or r.get("places")):  # 수정 응답도 직전 코스의 조건을 그대로 돌려준다
         return
     dates = r.get("dates") or []
     items = []
@@ -234,8 +233,8 @@ def show_result(r: dict, key: str, latest: bool = False) -> None:
         export_tools(r, key)
         if latest:
             st.caption("코스 고치기")
-            for col, (label, text) in zip(st.columns(len(EDITS)), EDITS.items()):
-                col.button(label, key=f"edit-{key}-{label}", on_click=ask, args=(text,), use_container_width=True)
+            for col, (label, kind) in zip(st.columns(len(EDITS)), EDITS.items()):
+                col.button(label, key=f"edit-{key}-{label}", on_click=ask, args=(label, kind), use_container_width=True)
 
 
 def export_tools(r: dict, key: str) -> None:
@@ -284,7 +283,9 @@ with st.sidebar:
             st.json(api("GET", f"/api/admin/ingest/{ss.run_id}", headers={"X-Admin-Token": token}))
 
 # --- 본문: 대화 (UI-01, UI-02) ---
-message = st.chat_input("예) 이번 토요일 해운대, 부모님과 걷기 좋은 바다 코스") or ss.pop("queued", None)
+typed = st.chat_input("예) 이번 토요일 해운대, 부모님과 걷기 좋은 바다 코스")
+message, edit_kind = typed or ss.pop("queued", None), ss.pop("queued_edit", None)
+edit_kind = None if typed else edit_kind  # 직접 입력한 질문이면 버튼 수정 요청은 버린다
 busy = bool(message or ss.get("queued_photo"))
 st.title("BusanMate")
 
@@ -321,8 +322,9 @@ if message:  # 질문은 바로 보이고, 답은 기다리는 동안 스피너
     with st.chat_message("user"):
         st.markdown(message)
     with st.chat_message("assistant"):
-        with st.spinner("코스를 짜는 중… 보통 10~20초 걸립니다."):
-            result = api("POST", "/api/chat", json={"session_id": ss.sid, "message": message})
+        with st.spinner("코스를 고치는 중…" if edit_kind else "코스를 짜는 중… 보통 10~20초 걸립니다."):
+            body = {"session_id": ss.sid, "message": message} | ({"edit": {"kind": edit_kind}} if edit_kind else {})
+            result = api("POST", "/api/chat", json=body)
         show_result(result, key=f"h{len(ss.history) + 1}", latest=True)
     ss.history += [{"role": "user", "content": message}, {"role": "assistant", "result": result}]
 

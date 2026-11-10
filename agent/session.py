@@ -15,6 +15,6 @@ def get(session_id: str) -> dict:
         for k in [k for k, s in _store.items() if now - s["touched"] > ttl]:
             del _store[k]
         s = _store.setdefault(session_id, {"preferences": {}, "last_course": None, "last_conditions": None,
-                                           "pending": None})
+                                           "last_dates": [], "pending": None})
         s["touched"] = now
         return s
