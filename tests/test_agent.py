@@ -17,6 +17,10 @@ CANDS = [{"place_id": i, "source": "busan_attraction", "name": f"장소{i}", "ca
           "lat": 35.10 + i * 0.002, "lng": 129.03 + i * 0.002, "indoor": c == "문화시설", "sim": 0.9 - i * 0.01,
           "description": f"설명{i}", "open_hours": None, "url": None, "license": "공공데이터"}
          for i, c in enumerate(["해변", "문화시설", "음식점", "공원·자연"] * 3)]
+# 이름으로 콕 집어 말한 장소 처리용: 검색 결과(CANDS)에 없는 실제 장소 1곳과 비슷한 이름 후보
+YONG = {**CANDS[3], "place_id": 100, "name": "용두산공원", "lat": 35.1007, "lng": 129.0324}
+NAMES = [{"place_id": 200 + i, "name": n, "gu": g} for i, (n, g) in enumerate(
+    [("해운대", "해운대구"), ("오션블루 가덕휴게소", "강서구"), ("대청스카이전망대", "중구"), ("해운대 블루라인파크", "해운대구")])]
 
 
 class FakeLLM:
@@ -48,7 +52,10 @@ def fake(monkeypatch):
     monkeypatch.setattr(map_tool, "kakao_leg", lambda a, b: {"mode": "taxi", "minutes": 9, "meters": 3000,
                                                              "estimated": False, "taxi_fare": 5000})
     monkeypatch.setattr(REGISTRY["get_festivals"], "run", lambda args, ctx: ToolResult(ok=True, updates={"festivals": []}))
-    monkeypatch.setattr(response, "fetch_places", lambda ids: {c["place_id"]: c for c in CANDS if c["place_id"] in ids})
+    monkeypatch.setattr(response, "fetch_places", lambda ids: {c["place_id"]: c for c in CANDS + [YONG] if c["place_id"] in ids})
+    monkeypatch.setattr(places_tool, "fetch_places", lambda ids: {c["place_id"]: c for c in CANDS + [YONG] if c["place_id"] in ids})
+    monkeypatch.setattr(query_parser, "all_place_names", lambda: [{"place_id": c["place_id"], "name": c["name"],
+                                                                   "gu": c["gu"]} for c in CANDS + [YONG] + NAMES])
 
     def use(llm):
         for m in (query_parser, response, orchestrator):
@@ -160,3 +167,71 @@ def test_llm_down_uses_rules_and_default_plan(fake):
     before = [i["place_id"] for i in items]  # LLM이 없어도 "두 번째 장소 빼줘"가 동작한다
     after = [i["place_id"] for i in chat(sid, "두 번째 장소 빼줘")["course"]["days"][0]["items"]]  # 1일차 기준
     assert sorted(after) == sorted(before[:1] + before[2:])
+
+
+# --- 이름으로 콕 집어 말한 장소 (없는 장소 안내, 있는 장소는 꼭 포함) ---
+def test_match_names_threshold_and_region_prefix():
+    from services.search import match_names
+    rows = [{"place_id": c["place_id"], "name": c["name"], "gu": c["gu"]} for c in [YONG] + NAMES]
+    found, missing = match_names(["용두산공원", "용두산", "해운대 블루오션 스카이타워"], rows, ["해운대구"],
+                                 query_parser.REGION_WORDS)
+    assert found["용두산공원"]["place_id"] == 100 and found["용두산"]["place_id"] == 100  # 앞부분만 말해도 같은 장소
+    assert "해운대 블루오션 스카이타워" in missing                                        # 장소 "해운대"로 붙지 않는다
+    assert "해운대" not in missing["해운대 블루오션 스카이타워"]  # 지역 단어를 뗀 이름으로 비슷한 곳을 찾는다
+    found, missing = match_names(["해운대해수욕장", "광안리 해수욕장", "부산 아쿠아랜드"],
+                                 rows + [{"place_id": 300, "name": "임랑해수욕장", "gu": "기장군"},
+                                         {"place_id": 301, "name": "광안리해수욕장", "gu": "수영구"}],
+                                 [], query_parser.REGION_WORDS)
+    assert found["해운대해수욕장"]["name"] == "해운대"                    # DB 이름 + 일반 접미어 (임랑해수욕장 아님)
+    assert found["광안리 해수욕장"]["place_id"] == 301
+    assert missing["부산 아쿠아랜드"] == []                               # 비슷한 곳이 없으면 억지로 안내하지 않는다
+
+
+def test_unknown_place_notice_on_top(fake):
+    sid = str(uuid.uuid4())
+    fake(FakeLLM({"intent": "course", "query": "바다", "gu": ["해운대구"], "start_date": "2026-11-07",
+                  "places": ["해운대 블루오션 스카이타워"]},
+                 plan=[[("search_places", {}), ("build_course", {})], [("get_route_times", {})]]))
+    r = chat(sid, "이번 토요일 해운대 블루오션 스카이타워 꼭 넣어줘")
+    first = r["notices"][0]
+    assert first.startswith("'해운대 블루오션 스카이타워'는 공공데이터에서 찾지 못해 코스에서 제외했어요. 비슷한 장소: ")
+    assert r["course"]["days"]  # 코스는 나머지 조건으로 계속 만든다
+
+
+def test_known_place_is_always_in_course(fake):
+    sid = str(uuid.uuid4())
+    fake(FakeLLM({"intent": "course", "query": "산책", "start_date": "2026-11-07", "places": ["용두산공원"]},
+                 plan=[[("search_places", {}), ("build_course", {})], [("get_route_times", {})]]))
+    r = chat(sid, "이번 토요일 용두산공원 꼭 넣어줘")
+    assert r["conditions"]["gu"] == ["중구"]  # 지역을 안 말해도 그 장소의 구로 짠다(되묻지 않음)
+    assert 100 in {i["place_id"] for i in r["course"]["days"][0]["items"]}
+    assert not any("찾지 못해" in n for n in r["notices"])
+
+
+def test_llm_down_known_place_and_rule_summary(fake):
+    """LLM이 모두 실패해도 메시지 속 실제 장소명은 코스에 넣고, 답변은 대체 문구 대신 규칙 기반 요약."""
+    sid = str(uuid.uuid4())
+    fake(FakeLLM({}, fail=True))
+    r = chat(sid, "중구 바다 코스 용두산공원 꼭 넣어줘")
+    names = [i["name"] for i in r["course"]["days"][0]["items"]]
+    assert "용두산공원" in names and not any("찾지 못해" in n for n in r["notices"])
+    assert "요청하신 조건으로" not in r["answer"] and " → ".join(names) in r["answer"]
+
+
+@pytest.mark.parametrize("msg, names", [
+    ("이번 토요일 해운대 블루오션 스카이타워 꼭 넣어줘", ["블루오션 스카이타워"]),
+    ("이번 토요일 해운대 코스, 동백섬이랑 부산 아쿠아랜드 포함", ["동백섬", "부산 아쿠아랜드"]),
+    ("중구 바다 코스 용두산공원 꼭 넣어줘", ["용두산공원"]),
+    ("해운대 바다 코스", []),
+])
+def test_rule_named_phrases(msg, names):  # LLM 실패 시 장소명 추출
+    assert query_parser._named_phrases(msg) == names
+
+
+def test_llm_down_mixed_known_and_unknown_places(fake):
+    """있는 장소와 없는 장소를 함께 말하면: 있는 곳은 코스에, 없는 곳은 안내 (한 덩어리로 묶여 안내 없이 사라지던 문제)."""
+    sid = str(uuid.uuid4())
+    fake(FakeLLM({}, fail=True))
+    r = chat(sid, "중구 코스, 용두산공원이랑 부산 아쿠아랜드 포함")
+    assert r["notices"][0].startswith("'부산 아쿠아랜드'는 공공데이터에서 찾지 못해")
+    assert "용두산공원" in [i["name"] for i in r["course"]["days"][0]["items"]]

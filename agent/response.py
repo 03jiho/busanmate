@@ -65,6 +65,22 @@ def verify_places(text: str, allowed: dict[int, str]) -> tuple[str, list[int]]:
     return "".join(out).strip(), dropped
 
 
+def rule_summary(course: dict | None, names: list[str], dates: list | None = None) -> str:
+    """LLM이 실패했을 때의 요약: 장소 순서와 이동 방법을 코드로 쓴다 (DB 이름만 쓰므로 근거는 그대로 DB)."""
+    if not course:
+        return f"조건에 맞는 장소 {len(names)}곳을 찾았습니다: {', '.join(names)}."
+    lines = []
+    for d in course["days"]:
+        legs = [i["leg_to_next"] for i in d["items"] if i.get("leg_to_next")]
+        walk, taxi = sum(lg["mode"] == "walk" for lg in legs), sum(lg["mode"] == "taxi" for lg in legs)
+        how = " · ".join(x for x in [f"도보 {walk}구간" if walk else "", f"택시 {taxi}구간" if taxi else ""] if x)
+        when = f"{dates[d['day'] - 1].month}월 {dates[d['day'] - 1].day}일 " if dates and d["day"] <= len(dates) else ""
+        head = f"{d['day']}일차 {when}" if len(course["days"]) > 1 else when
+        lines.append(f"{head}코스: {' → '.join(i['name'] for i in d['items'])} (장소 {len(d['items'])}곳"
+                     + (f", {how})" if how else ")"))
+    return "\n\n".join(lines)
+
+
 def build_response(state: dict) -> dict:
     notices, intent = list(state.get("notices") or []), state.get("intent")
     if state.get("clarify"):
@@ -107,8 +123,10 @@ def build_response(state: dict) -> dict:
         if dropped:
             log.warning("verify_places 제거 id=%s", dropped)  # ERR-007
     except Exception as e:
-        log.warning("response LLM 실패: %s", type(e).__name__)
-        answer = "요청하신 조건으로 코스를 만들었습니다." if course else "조건에 맞는 장소를 찾았습니다."
+        # 원인을 남긴다(예외 종류 + 메시지 앞부분, 키·토큰처럼 보이는 값은 가림). 질의 원문은 남기지 않는다 (SDD §8)
+        reason = re.sub(r"(?i)(key|token|authorization|serviceKey)\s*[=:]\s*\S+", r"\1=***", str(e))[:160]
+        log.warning("response LLM 실패: %s %s", type(e).__name__, reason)
+        answer = rule_summary(course, [places[i]["name"] for i in ids], state.get("dates"))
         # 추천 이유는 DB 설명의 첫 줄(공공데이터 장소 소개 문구)로 대신한다. 근거는 여전히 DB뿐이다 (AI-REQ-01·02)
         reasons = {i: (places[i]["description"] or "").split("\n")[0][:80] or None for i in ids}
         notices.append("AI 설명을 만들지 못해 추천 이유를 장소 소개 문구로 대신합니다.")

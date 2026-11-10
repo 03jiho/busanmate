@@ -90,6 +90,12 @@ course:                             # COMP-06, FR-006, FR-014
   max_same_category_run: 2          # 같은 분류 3곳 연속 금지
   food_per_day: {default: 2, food_theme: 3}  # 초안: 하루 음식점 상한(끼니 수). 분류를 음식점으로 직접 지정하면 상한 없음
 
+named_place:                        # 사용자가 이름으로 말한 장소를 DB와 대조 (services/search.match_names)
+  match_threshold: 0.8              # 초안: 정규화한 이름의 유사도가 이 이상이면 같은 장소
+  similar_n: 2                      # 못 찾았을 때 안내할 비슷한 장소 수
+  similar_min: 0.35                 # 초안: 이보다 덜 비슷하면 "비슷한 장소"로 안내하지 않는다
+  generic_suffixes: [해수욕장, 해변, 유원지, 공원, 시장, 마을, 거리, 전망대, 산, 섬]  # DB 이름 + 이 말이면 같은 장소
+
 preferences:                        # FR-005 선호 테마 → 가산점을 줄 분류 (pref 항)
   theme_categories:
     바다: [해변]                      # 공원·자연을 넣으면 장산·수목원 같은 내륙이 바다 코스에 섞인다

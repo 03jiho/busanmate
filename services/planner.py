@@ -56,7 +56,9 @@ def select(scored: list[dict], k: int, food_cap: int | None = None) -> list[dict
     food_cap: 음식점은 이 수까지만 (다른 분류 후보가 남아 있는 동안). None이면 상한 없음."""
     lam = config()["score"]["diversity_penalty"]
     food = config()["classify"]["food"]["category"]
-    pool, chosen = list(scored), []
+    chosen = [p for p in scored if p.get("must")][:k]  # 사용자가 이름으로 콕 집은 장소는 먼저 넣는다
+    names = {p["name"].replace(" ", "") for p in chosen}
+    pool = [p for p in scored if p not in chosen and p["name"].replace(" ", "") not in names]
     while pool and len(chosen) < k:
         if food_cap is not None and sum(q["category"] == food for q in chosen) >= food_cap \
                 and any(p["category"] != food for p in pool):
@@ -111,6 +113,8 @@ def plan_day(scored: list[dict], k: int, hours: float, mode: str, check_variety:
         dense = [p for p in scored
                  if sum("walk_minutes" not in estimate_leg(p, q, "walk") for q in scored if q is not p) >= min_k - 1]
         anchor = dense[0] if dense else anchor
+    must = [p for p in scored if p.get("must")]
+    anchor = must[0] if must else anchor  # 이름으로 콕 집은 장소가 있으면 그곳을 기준으로 동선을 짠다
 
     def dist(p):
         return haversine_km(p["lat"], p["lng"], anchor["lat"], anchor["lng"])
@@ -123,6 +127,7 @@ def plan_day(scored: list[dict], k: int, hours: float, mode: str, check_variety:
         lack = (k - food_cap) - sum(p["category"] != food for p in near)
         if lack > 0:
             near += sorted((p for p in group if p["category"] != food and p not in near), key=dist)[:lack]
+    near += [p for p in must if p not in near]
     if len(near) >= min_k:
         scored, k = near, min(k, len(near))
     seq = select(scored, k, food_cap)
@@ -132,7 +137,11 @@ def plan_day(scored: list[dict], k: int, hours: float, mode: str, check_variety:
             # 한 분류가 많아 3연속을 피할 순서가 없다(FR-006): 그 분류의 최저점 장소를 지금 동선에 가장 가까운
             # 다른 분류 장소로 바꾸고, 없으면 뺀다. 2곳 이하는 항상 조건을 만족한다.
             top = Counter(p["category"] for p in seq).most_common(1)[0][0]
-            seq.remove(min((p for p in seq if p["category"] == top), key=lambda p: p["score"]))
+            removable = [p for p in seq if p["category"] == top and not p.get("must")]
+            if not removable:  # 콕 집은 장소들끼리라 뺄 수 없다: 연속 제한보다 사용자 지정이 우선
+                check_variety = False
+                continue
+            seq.remove(min(removable, key=lambda p: p["score"]))
             clat, clng = _centroid(seq)
             food = config()["classify"]["food"]["category"]
             full = food_cap is not None and sum(p["category"] == food for p in seq) >= food_cap  # 음식점 상한 유지
@@ -140,9 +149,10 @@ def plan_day(scored: list[dict], k: int, hours: float, mode: str, check_variety:
             if alts:
                 seq.append(min(alts, key=lambda p: haversine_km(p["lat"], p["lng"], clat, clng)))
             continue
-        if day_minutes(ordered, mode) <= hours * 60 or len(ordered) <= min_k:
+        others = [p for p in seq if not p.get("must")]
+        if day_minutes(ordered, mode) <= hours * 60 or len(ordered) <= min_k or not others:
             break
-        seq.remove(min(seq, key=lambda p: p["score"]))
+        seq.remove(min(others, key=lambda p: p["score"]))
     if day_minutes(ordered, mode) > hours * 60:
         notices.append("가용 시간 안에 모두 둘러보기 빠듯한 일정입니다.")
     return ordered, notices

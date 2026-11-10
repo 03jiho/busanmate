@@ -5,7 +5,7 @@ from dataclasses import replace
 
 from services.planner import best_order, build_course, items_for
 from services.route import haversine_km
-from services.search import search, theme_points
+from services.search import fetch_places, search, theme_points
 from settings import config
 from tools.base import BaseTool, ToolResult, register
 
@@ -27,6 +27,10 @@ class SearchPlaces(BaseTool):
     def run(self, args, ctx):
         cond = replace(ctx["conditions"], query=args["query"]) if args.get("query") else ctx["conditions"]
         hits, notices = search(cond)
+        if cond.must:  # 이름으로 콕 집은 장소는 검색 결과에 없어도 맨 앞에 넣고 코스에 꼭 넣게 표시한다
+            rows = fetch_places(cond.must)
+            hits = [{**rows[i], "sim": 1.0, "must": True} for i in cond.must if i in rows] + \
+                   [h for h in hits if h["place_id"] not in rows]
         return ToolResult(ok=bool(hits), data={"count": len(hits), "top": [_brief(p) for p in hits[:8]]},
                           notices=notices, updates={"candidates": hits})
 
@@ -89,8 +93,11 @@ class EditCourse(BaseTool):
             used = {i["place_id"] for d in course["days"] for i in d["items"]}
             cond = replace(ctx["conditions"], query=args.get("spec") or ctx["conditions"].query,
                            gu=[], categories=[], indoor=None)
-            hits, _ = search(cond, n=20)
-            hits = [h for h in hits if h["place_id"] not in used]
+            named = [i for i in ctx["conditions"].must if i not in used]  # "○○ 코스에 넣어줘": 말한 그 장소를 쓴다
+            hits = list(fetch_places(named[:1]).values()) if named else []
+            if not hits:
+                hits, _ = search(cond, n=20)
+                hits = [h for h in hits if h["place_id"] not in used]
             if not hits:
                 return ToolResult(ok=False, data={"error": "조건에 맞는 장소 없음"},
                                   notices=["조건에 맞는 장소를 찾지 못해 코스를 바꾸지 않았습니다."])

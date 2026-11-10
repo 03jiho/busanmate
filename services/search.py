@@ -2,6 +2,7 @@
 import logging
 import re
 from dataclasses import dataclass, field, replace
+from difflib import SequenceMatcher
 
 from psycopg.rows import dict_row
 
@@ -26,6 +27,57 @@ class Conditions:
     mode: str = "auto"                                # auto / walk / taxi
     theme: str | None = None                          # config preferences.theme_categories 키
     companion: str | None = None
+    must: list[int] = field(default_factory=list)     # 사용자가 이름으로 콕 집은 장소 중 DB에서 찾은 place_id (코스에 꼭 넣는다)
+
+
+def all_place_names() -> list[dict]:
+    with db.connect() as conn, conn.cursor(row_factory=dict_row) as cur:
+        cur.execute("SELECT place_id, name, gu FROM place WHERE is_active")
+        return cur.fetchall()
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"\(.*?\)|\s", "", s).lower()
+
+
+def match_names(requested: list[str], rows: list[dict], gu: list[str] | None = None,
+                strip: list[str] | None = None) -> tuple[dict[str, dict], dict[str, list[str]]]:
+    """사용자가 말한 장소명 → DB 장소. (찾은 것 {말한 이름: 행}, 못 찾은 것 {말한 이름: 비슷한 장소명 상위 N}).
+    일치: 정규화(공백·괄호 제거)한 이름의 SequenceMatcher 비율이 임계 이상, 또는 말한 이름이 DB 이름의 앞부분
+    ("용두산" → 용두산공원), 또는 DB 이름 뒤에 일반 접미어만 붙은 경우("해운대해수욕장" → 해운대, "태종대 유원지" → 태종대).
+    DB 이름이 말한 이름 안에 들어 있는 것만으로는 일치로 보지 않는다("해운대 블루오션 스카이타워" ≠ 해운대).
+    앞의 지역 단어(strip)를 뗀 형태는 비슷한 장소 안내에만 쓴다(일치에 쓰면 "해운대해수욕장" → "해수욕장" → 임랑해수욕장)."""
+    c = config()["named_place"]
+    suffixes = [_norm(s) for s in c["generic_suffixes"]]
+    found, missing = {}, {}
+    for said in requested:
+        full = _norm(said)
+        variants = {full}
+        for w in strip or []:
+            if full.startswith(_norm(w)) and len(full) > len(_norm(w)) + 1:
+                variants.add(full[len(_norm(w)):])
+
+        def score(row):
+            name = _norm(row["name"])
+            best = SequenceMatcher(None, full, name).ratio()
+            prefix = len(full) >= 2 and name.startswith(full) and len(full) / len(name) >= 0.5
+            if prefix or (full.startswith(name) and full[len(name):] in suffixes):
+                best = max(best, c["match_threshold"])
+            return best
+
+        ranked = sorted(rows, key=lambda r: (score(r), r["gu"] in (gu or [])), reverse=True)
+        if ranked and score(ranked[0]) >= c["match_threshold"]:
+            found[said] = ranked[0]
+            continue
+        # 비슷한 장소: 지역 단어를 뗀 이름으로 비교한다("부산 아쿠아랜드"가 "부산족발"과 '부산'만으로 가까워지지 않게).
+        # 너무 다르면(similar_min 미만) 안내하지 않는다.
+        core = [v for v in variants if v != _norm(said)] or list(variants)
+
+        def sim(row):
+            return max(SequenceMatcher(None, v, _norm(row["name"])).ratio() for v in core)
+        close = sorted(rows, key=lambda r: (sim(r), r["gu"] in (gu or [])), reverse=True)
+        missing[said] = [r["name"] for r in close[:c["similar_n"]] if sim(r) >= c["similar_min"]]
+    return found, missing
 
 
 def fetch_places(ids: list[int]) -> dict[int, dict]:

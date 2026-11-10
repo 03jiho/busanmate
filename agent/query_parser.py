@@ -4,8 +4,9 @@ import re
 from datetime import date, timedelta
 
 from agent import prompt
+from agent.response import with_josa
 from services.llm import get_llm
-from services.search import Conditions
+from services.search import Conditions, all_place_names, match_names
 from settings import config
 
 log = logging.getLogger("agent")
@@ -41,6 +42,7 @@ def schema() -> dict:
         "mode": {"type": "string", "enum": ["walk", "taxi"]},
         "indoor": {"type": "boolean"},
         "query": {"type": "string"},
+        "places": {"type": "array", "items": {"type": "string"}},
         "edit": {"type": "object", "required": ["op"], "properties": {
             "op": {"type": "string", "enum": ["replace", "add", "remove"]},
             "day": {"type": "integer"}, "index": {"type": "integer"}, "spec": {"type": "string"}}},
@@ -52,6 +54,27 @@ def _llm_parse(message: str, today: date) -> dict:
                                      gu_list=", ".join(BUSAN_GU), categories=", ".join(categories()),
                                      themes=", ".join(themes()))
     return get_llm().json(system, message, schema())
+
+
+NAMED_TRIGGER = re.compile(r"((?:\S+\s+){0,3}?\S+?)(?:은|는|을|를|도)?\s+(?:꼭\s*|반드시\s*)?(?:넣어|포함|추가|들러|가고\s*싶)")
+NAMED_FILLER = re.compile(r"이번|다음|주|오늘|내일|모레|\S*요일\S*|\S*코스\S*|\S*일정\S*|\S*여행\S*|\d+\S*")
+
+
+def _named_phrases(message: str) -> list[str]:
+    """LLM 실패 시 장소명 추출: "○○ 꼭 넣어줘 / 포함 / 가고 싶어" 앞의 어절에서 날짜·"코스" 같은 말을 떼고,
+    이랑·랑·하고·쉼표·및으로 나눈다. 예: "토요일 코스, 동백섬이랑 부산 아쿠아랜드 포함" → [동백섬, 부산 아쿠아랜드]."""
+    m = NAMED_TRIGGER.search(message)
+    if not m:
+        return []
+    words = m.group(1).split()
+    cut = max((i + 1 for i, w in enumerate(words) if NAMED_FILLER.fullmatch(w)), default=0)  # 마지막 채움말 뒤만
+    words = words[cut:] or words[-1:]
+    while len(words) > 1 and (words[0] in BUSAN_GU or words[0] in REGION_WORDS or words[0] in ("바다", "맛집")):
+        words.pop(0)  # 앞에 붙은 지역·테마 단어
+    if not words:
+        return []
+    parts = re.split(r"\s*,\s*|\s+및\s+|(?<=[가-힣])(?:이랑|랑|하고)\s+", " ".join(words))
+    return [re.sub(r"(은|는|을|를|도|에)$", "", p).strip() for p in parts if p.strip()]
 
 
 def _rule_parse(message: str, has_course: bool) -> dict:
@@ -73,11 +96,48 @@ def _rule_parse(message: str, has_course: bool) -> dict:
         intent = "course"
     else:
         intent = "search"
+    # 장소명: "○○ 꼭 넣어줘 / 포함 / 가고 싶어" 앞의 최대 세 어절 (지역 단어는 match_names가 떼어 본다)
     return {"intent": intent, "gu": gu, "query": message, "edit": edit,
+            "places": _named_phrases(message) if intent != "edit" else [],
             "days": int(nights.group(1)) + 1 if nights else 1,
             "mode": "walk" if re.search(r"걸어|도보", message) else ("taxi" if "택시" in message else None),
             "indoor": True if "실내" in message else None,
             "theme": next((t for t, pat in theme_words.items() if re.search(pat, message)), None)}
+
+
+REGION_WORDS = sorted({g[:-1] for g in BUSAN_GU if len(g) > 2} | {"부산", "서면", "광안리", "남포동", "송정", "기장"},
+                      key=len, reverse=True)
+
+
+def resolve_places(names: list[str], cond: Conditions, scan_message: str | None = None) -> list[str]:
+    """말한 장소명을 DB와 대조한다. 찾은 곳은 cond.must에 넣고(지역을 안 말했으면 그 장소의 구를 지역으로),
+    못 찾은 곳은 맨 위에 띄울 안내문으로 돌려준다. scan_message가 있으면(LLM 실패 시) 메시지 안의 DB 장소명도 찾는다."""
+    names = [n.strip() for n in names if n and n.strip()]
+    if not names and not scan_message:
+        return []
+    try:
+        rows = all_place_names()
+    except Exception as e:  # DB 장애: 대조를 건너뛴다 (코스는 검색 결과로 계속 만든다)
+        log.warning("장소명 대조 실패: %s", type(e).__name__)
+        return []
+    found, missing = match_names(names, rows, cond.gu, REGION_WORDS)
+    if scan_message:  # 규칙 기반일 때 놓친 실제 장소명(3자 이상, 지역 이름 제외)
+        msg = re.sub(r"\s", "", scan_message)
+        for r in rows:
+            n = re.sub(r"\s", "", r["name"])
+            if len(n) >= 3 and n in msg and n not in REGION_WORDS:
+                found.setdefault(r["name"], r)
+                # 같은 장소를 가리킨 미매칭만 지운다("용두산" → 용두산공원). 덩어리에 섞여 있어도 다른 이름은 남긴다
+                missing = {k: v for k, v in missing.items() if not n.startswith(re.sub(r"\s", "", k))}
+    cond.must = list(dict.fromkeys(r["place_id"] for r in found.values()))
+    if found and not cond.gu:
+        cond.gu = sorted({r["gu"] for r in found.values()})
+    out = []
+    for said, similar in missing.items():
+        josa = with_josa(said, "은")[len(said):]
+        hint = f" 비슷한 장소: {', '.join(similar)}" if similar else ""
+        out.append(f"'{said}'{josa} 공공데이터에서 찾지 못해 코스에서 제외했어요.{hint}")
+    return out
 
 
 def parse(message: str, today: date, prefs: dict | None = None, has_course: bool = False) -> dict:
@@ -104,6 +164,7 @@ def parse(message: str, today: date, prefs: dict | None = None, has_course: bool
         mode=raw.get("mode") or prefs.get("mode") or config()["travel"]["default_mode"],
         theme=raw.get("theme") if raw.get("theme") in themes() else prefs.get("theme"),
         companion=raw.get("companion") or prefs.get("companion"))
+    notices = resolve_places(raw.get("places") or [], cond, message if fallback else None) + notices
 
     try:
         start = date.fromisoformat(raw["start_date"]) if raw.get("start_date") else None
