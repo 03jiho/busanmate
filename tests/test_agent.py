@@ -303,3 +303,35 @@ def test_edit_button_without_course_asks_first(fake):
     fake(FakeLLM({}))
     r = orchestrator.handle_chat(str(uuid.uuid4()), "카페 추가", today=TODAY, edit={"kind": "cafe"})
     assert "먼저 코스를" in r["answer"] and r["course"] is None
+
+
+def test_empty_reason_card_gets_category_address_line(fake):
+    """LLM이 추천 이유를 빠뜨린 카드는 분류·주소로 만든 한 줄로 채운다 (빈 카드 없음)."""
+    sid = str(uuid.uuid4())
+    fake(FakeLLM({"intent": "course", "query": "바다", "gu": ["중구"], "start_date": "2026-11-07"},
+                 plan=[[("search_places", {}), ("build_course", {})], [("get_route_times", {})]]))
+    items = chat(sid, "이번 토요일 중구 코스")["course"]["days"][0]["items"]
+    assert all(i["reason"] for i in items)
+    assert any(i["reason"] == f"중구에 있는 {i['category']}입니다." for i in items if i["place_id"] != 0)
+
+
+@pytest.mark.parametrize("msg", ["이번 토요일 중구 비 오는 날 코스", "토요일 중구 우천 시 갈 곳 코스"])
+def test_rainy_words_mean_indoor(fake, msg):
+    fake(FakeLLM({"intent": "course", "query": "x", "gu": ["중구"], "start_date": "2026-11-07"}))
+    assert query_parser.parse(msg, TODAY)["conditions"].indoor is True
+
+
+@pytest.mark.parametrize("msg, cats", [("이번 토요일 서면 맛집 투어 코스", []), ("이번 토요일 서면 식당만 도는 코스", ["음식점"])])
+def test_theme_like_category_is_theme_unless_only(fake, msg, cats):
+    """"맛집 투어"를 categories=[음식점]으로 읽어도 테마로만 둔다(식당만 나오지 않게). '식당만'이면 분류 필터."""
+    fake(FakeLLM({"intent": "course", "query": "x", "gu": ["부산진구"], "start_date": "2026-11-07", "theme": "맛집",
+                  "categories": ["음식점"]}))
+    assert query_parser.parse(msg, TODAY)["conditions"].categories == cats
+
+
+def test_reason_that_only_repeats_name_is_replaced():  # 소개 첫 줄이 제목(=장소명)이라 카드에 "동삼정"만 뜨던 문제
+    p = {"name": "동삼정", "category": "음식점", "gu": "중구", "address": "부산광역시 중구 광복로 1\n2층",
+         "description": "동삼정\n대표 메뉴: 밀면\n50년 전통의 밀면집으로 담백한 육수가 특징이다."}
+    assert response.intro_line(p) == "50년 전통의 밀면집으로 담백한 육수가 특징이다."  # 짧은 메뉴 줄도 건너뛴다
+    assert response.intro_line({**p, "description": "동삼정"}) is None
+    assert response.fallback_line(p) == "중구 광복로 1에 있는 음식점입니다."

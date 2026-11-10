@@ -86,6 +86,40 @@ def to_place(row: dict, source: str) -> dict | None:
     }
 
 
+def split_title(name: str) -> list[str]:
+    """원본 제목의 쉼표 처리. 세 어절 이상인 쪽은 홍보 문구로 보고 뗀다("철새와 함께하는 …, 을숙도" → [을숙도]).
+    남은 이름이 둘 이상이고 모두 분류 규칙에 걸리면 장소 여럿으로 나눈다("중앙공원, 민주공원" → 둘).
+    하나라도 규칙에 안 걸리면 한 시설로 보고 그대로 둔다("40계단, 문화관", "남포, 광복지하도상가")."""
+    parts = [p.strip() for p in name.split(",") if p.strip()]
+    if len(parts) < 2:
+        return [name]
+    places = [p for p in parts if len(p.split()) < 3]
+    if len(places) == 1:
+        return places
+    default = config()["classify"]["default"]["category"]
+    if len(places) >= 2 and all(classify(p)[0] != default for p in places):
+        return places
+    return [name]
+
+
+def to_places(row: dict, source: str) -> list[dict]:
+    """to_place + 합쳐진 이름 나누기(명소만). 나눈 둘째부터는 원본 id에 '-2', '-3'을 붙이고, 대표 이미지는 첫째만 쓴다.
+    좌표·설명·출처는 원본 행 그대로이므로 플래너는 같은 좌표의 장소를 한 코스에 두 번 넣지 않는다."""
+    p = to_place(row, source)
+    if not p:
+        return []
+    names = [p["name"]] if source == "busan_food" else split_title(p["name"])
+    if names == [p["name"]]:
+        return [p]
+    out = []
+    for j, n in enumerate(names):
+        category, indoor = classify(n)
+        out.append({**p, "name": n, "category": category, "indoor": indoor,
+                    "source_id": p["source_id"] if j == 0 else f"{p['source_id']}-{j + 1}",
+                    "image_url": p["image_url"] if j == 0 else None})
+    return out
+
+
 def parse_period(text: str) -> tuple[date, date] | None:
     """'2025. 9. 26.(금) ~ 2025. 9. 28.(일)' 같은 자유 형식에서 (시작, 종료). 연도가 하나도 없으면 None."""
     dates, year = [], None

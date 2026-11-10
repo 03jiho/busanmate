@@ -57,6 +57,7 @@ def _llm_parse(message: str, today: date) -> dict:
     return get_llm().json(system, message, schema())
 
 
+RAINY = re.compile(r"비\s*(?:오는|올\s*때|올\s*것|예보)|우천|장마")
 NAMED_TRIGGER = re.compile(r"((?:\S+\s+){0,3}?\S+?)(?:은|는|을|를|도)?\s+(?:꼭\s*|반드시\s*)?(?:넣어|포함|추가|들러|가고\s*싶)")
 NAMED_FILLER = re.compile(r"이번|다음|주|오늘|내일|모레|\S*요일\S*|\S*코스\S*|\S*일정\S*|\S*여행\S*|\d+\S*")
 
@@ -102,7 +103,7 @@ def _rule_parse(message: str, has_course: bool) -> dict:
             "places": _named_phrases(message) if intent != "edit" else [],
             "days": int(nights.group(1)) + 1 if nights else 1,
             "mode": "walk" if re.search(r"걸어|도보", message) else ("taxi" if "택시" in message else None),
-            "indoor": True if "실내" in message else None,
+            "indoor": True if "실내" in message or RAINY.search(message) else None,
             "theme": next((t for t, pat in theme_words.items() if re.search(pat, message)), None)}
 
 
@@ -159,12 +160,17 @@ def parse(message: str, today: date, prefs: dict | None = None, has_course: bool
         query=raw.get("query") or message,
         gu=[g for g in raw.get("gu") or [] if g in BUSAN_GU],
         categories=[c for c in raw.get("categories") or [] if c in categories()],
-        indoor=raw.get("indoor"),
+        indoor=True if RAINY.search(message) and raw.get("indoor") is None else raw.get("indoor"),  # "비 오는 날" → 실내
         days=max(1, int(raw.get("days") or 1)),
         hours=raw.get("hours"),
         mode=raw.get("mode") or prefs.get("mode") or config()["travel"]["default_mode"],
         theme=raw.get("theme") if raw.get("theme") in themes() else prefs.get("theme"),
         companion=raw.get("companion") or prefs.get("companion"))
+    theme_cats = config()["preferences"]["theme_categories"].get(cond.theme, [])
+    if cond.categories and set(cond.categories) == set(theme_cats) and not re.search(r"(음식점|식당|카페|맛집)\s*만", message):
+        # "맛집 투어"를 분류 필터(음식점만)로 읽으면 하루 내내 식당만 나온다: 테마와 같은 분류는 테마로만 둔다.
+        # "식당만", "카페만"처럼 '만'을 붙였을 때만 분류 필터로 쓴다.
+        cond.categories = []
     notices = resolve_places(raw.get("places") or [], cond, message if fallback else None) + notices
 
     try:

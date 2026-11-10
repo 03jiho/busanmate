@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
+from services.planner import fit_lunch
 from settings import config, secret
 from tools.base import BaseTool, ToolResult, register
 
@@ -50,7 +51,7 @@ class GetRouteTimes(BaseTool):
                 return False
 
         ok = list(_pool.map(measure, legs))
-        notices = []
+        notices = [n for d in course["days"] if (n := fit_lunch(d))]  # 실측으로 점심이 시간대를 벗어났으면 출발 조정
         if not all(ok):
             notices.append("일부 택시 구간은 길찾기 조회에 실패해 직선거리 기반 예상치로 표시합니다.")
         if any(i["leg_to_next"] and i["leg_to_next"].get("walk_minutes") for d in course["days"] for i in d["items"]):

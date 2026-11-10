@@ -76,3 +76,23 @@ def test_to_festival():
                                              ("연화제과", "", "카페"), ("양평칼국수 본점", "칼국수", "음식점")])
 def test_food_rows_split_cafe(name, menu, cat):  # 코스 수정 "카페 추가"용: 맛집 데이터 중 카페를 음식점과 구분
     assert to_place({**ROW, "MAIN_TITLE": name, "RPRSNTV_MENU": menu}, "busan_food")["category"] == cat
+
+
+@pytest.mark.parametrize("name, parts", [
+    ("중앙공원, 민주공원", ["중앙공원", "민주공원"]),                   # 장소 둘 → 나눈다
+    ("송정해수욕장, 죽도공원", ["송정해수욕장", "죽도공원"]),
+    ("철새와 함께하는 아름다운 문화의 향연, 을숙도", ["을숙도"]),        # 홍보 문구는 뗀다
+    ("40계단, 문화관", ["40계단, 문화관"]),                            # 한 시설 → 그대로
+    ("남포, 광복지하도상가", ["남포, 광복지하도상가"]),
+])
+def test_split_title(name, parts):
+    from pipeline.busan import split_title
+    assert split_title(name) == parts
+
+
+def test_to_places_splits_with_suffixed_ids():
+    from pipeline.busan import to_places
+    out = to_places({**ROW, "MAIN_TITLE": "송정해수욕장, 죽도공원"}, "busan_attraction")
+    assert [(p["name"], p["category"], p["source_id"]) for p in out] == \
+        [("송정해수욕장", "해변", "1"), ("죽도공원", "공원·자연", "1-2")]
+    assert out[1]["image_url"] is None and out[0]["lat"] == out[1]["lat"]

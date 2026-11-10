@@ -74,8 +74,9 @@ def collect(source: str, seed: bool = False) -> list[dict]:
 
 # --- 2. 정제: 좌표·이름·구가 없는(축제는 기간을 읽을 수 없는) 행은 제외 ---
 def clean(rows: list[dict], source: str) -> list[dict]:
-    to_row = busan.to_festival if config()["sources"][source]["kind"] == "festival" else busan.to_place
-    return [x for x in (to_row(r, source) for r in rows) if x]
+    if config()["sources"][source]["kind"] == "festival":
+        return [x for x in (busan.to_festival(r, source) for r in rows) if x]
+    return [p for r in rows for p in busan.to_places(r, source)]  # 합쳐진 이름("중앙공원, 민주공원")은 나눠서
 
 
 # --- 3. 중복 제거: 한 응답 안에 같은 원본 id가 여러 번 오면 마지막 것만 ---
@@ -134,7 +135,7 @@ def ingest_source(conn, source: str, coll, seed: bool = False) -> tuple[int, int
     """한 소스: 수집 → 정제 → 중복 제거 → 적재(미커밋) → 임베딩 → 커밋. (신규, 갱신, 제외, 비활성화)."""
     rows = collect(source, seed)
     items = dedup(clean(rows, source))
-    skipped = len(rows) - len(items)
+    skipped = len(rows) - len({x["source_id"].split("-")[0] for x in items})  # 나눈 장소('-2')는 원본 1행으로 센다
     with conn.cursor() as cur:
         if config()["sources"][source]["kind"] == "festival":
             new, updated = load_festivals(cur, items)

@@ -173,3 +173,108 @@ def test_walk_course_keeps_places_and_taxis_far_legs():
     assert len(items) == 5  # 외딴 1위도 빼지 않는다
     assert [lg["mode"] for lg in legs].count("taxi") == 1 and next(lg for lg in legs if lg["mode"] == "taxi")["walk_minutes"] > 30
     assert all(lg["minutes"] <= 30 for lg in legs if lg["mode"] == "walk")
+
+
+# --- 식사 배치: 체류 5시간 이상이면 11:30~13:30 점심 식당 1곳, 식당·카페 연달아 금지 ---
+from services.planner import arrivals, eating, lunch_ok, meals_ok  # noqa: E402
+
+
+def _eat_mix(n_food=6, n_cafe=2, n_other=6, spread=0.004):
+    cafe = [{"place_id": 300 + i, "name": f"카페{i}", "category": "카페", "gu": "중구", "lat": 35.10 + i * spread,
+             "lng": 129.032, "indoor": True, "sim": 0.97 - i * 0.01} for i in range(n_cafe)]
+    return _mixed(n_food, n_other) + cafe
+
+
+def _lunch_food(items):
+    lo, hi = (int(x[:2]) * 60 + int(x[3:]) for x in config()["course"]["lunch_window"])
+    return [i for i, (a, _) in zip(items, arrivals(items)) if i["category"] == "음식점" and lo <= a <= hi]
+
+
+@pytest.mark.parametrize("theme", [None, "맛집", "바다"])
+@pytest.mark.parametrize("mode", ["auto", "walk"])
+def test_meal_rules_full_day(theme, mode):
+    """하루 9시간(6곳, 체류 6시간): 점심 시간대 식당 1곳 이상, 식당·카페가 연달아 오지 않는다."""
+    items = build_course(_eat_mix(), Conditions(query="x", theme=theme, mode=mode))["days"][0]["items"]
+    assert len(items) == 6 and meals_ok(items)
+    assert _lunch_food(items), [(i["category"], a) for i, (a, _) in zip(items, arrivals(items))]
+
+
+def test_lunch_added_when_no_food_selected():
+    """먹는 곳 점수가 낮아 식당이 안 뽑혀도, 체류 5시간 이상이면 식당 1곳을 넣는다."""
+    cands = _mixed(0, 10) + [{**_mixed(1, 0)[0], "place_id": 99, "name": "밥집", "sim": 0.1}]
+    items = build_course(cands, Conditions(query="x"))["days"][0]["items"]
+    assert any(i["category"] == "음식점" for i in items) and _lunch_food(items)
+
+
+def test_short_day_does_not_force_lunch():  # 반나절(체류 3시간)은 점심 보장 대상이 아니다
+    items = build_course(_mixed(0, 10), Conditions(query="x", hours=4))["days"][0]["items"]
+    assert not any(eating(i) for i in items)
+
+
+def test_meal_rule_functions():
+    a, f, c = ({"category": x, "lat": 35.1, "lng": 129.03, "gu": "중구"} for x in ("해변", "음식점", "카페"))
+    assert meals_ok([a, f, a, c]) and not meals_ok([a, f, c]) and not meals_ok([c, f])
+    # 10:00 해변(60분) → 이동 → 11시 무렵 음식점: 11:30 전 도착이면 점심이 아니다
+    assert not lunch_ok([a, f], "auto") and lunch_ok([a, a, f], "auto")
+
+
+def test_food_only_request_skips_meal_rules():  # "음식점만"이면 연달아 금지·점심 보장을 적용하지 않는다
+    items = build_course(_mixed(8, 0), Conditions(query="x", categories=["음식점"]))["days"][0]["items"]
+    assert len(items) == 6
+
+
+# --- 실내·비 오는 날 ---
+def test_indoor_prefers_indoor_attractions_and_explains_shortage():
+    """실내 요청: 실내 명소(문화시설)를 먼저 쓰고 식당·카페로만 채우지 않는다. 모자라면 이유를 알린다."""
+    food = _eat_mix(8, 2, 0)
+    attr = [{"place_id": 600 + i, "name": f"전시관{i}", "category": "문화시설", "gu": "중구", "lat": 35.101 + i * 0.002,
+             "lng": 129.031, "indoor": True, "sim": 0.5} for i in range(2)]
+    out = build_course(food + attr, Conditions(query="x", indoor=True, gu=["중구"]))
+    items = out["days"][0]["items"]
+    assert {600, 601} <= {i["place_id"] for i in items}            # 실내 명소는 모두 쓴다
+    assert sum(map(eating, items)) <= (len(items) + 1) // 2 and meals_ok(items)
+    assert any("실내 명소" in n and "2곳뿐" in n for n in out["notices"])
+
+
+def test_split_names_same_coords_not_both_picked():  # "중앙공원, 민주공원"을 나눠 저장해도 한 코스에 같이 넣지 않는다
+    a = {"place_id": 1, "name": "중앙공원", "category": "공원·자연", "gu": "중구", "lat": 35.11, "lng": 129.03,
+         "indoor": False, "sim": 0.99}
+    cands = [a, {**a, "place_id": 2, "name": "민주공원", "sim": 0.98}] + _mixed(0, 8)
+    ids = {i["place_id"] for i in build_course(cands, Conditions(query="x"))["days"][0]["items"]}
+    assert len(ids & {1, 2}) == 1
+
+
+def test_fit_lunch_shifts_start_after_measured_taxi():
+    """택시 실측이 추정보다 빨라 식당 도착이 11:14가 되면, 순서는 그대로 두고 출발을 10:20으로 옮겨 점심 시간대에 맞춘다."""
+    from services.planner import fit_lunch
+    a = {"category": "문화시설", "stay_min": 60, "leg_to_next": {"mode": "taxi", "minutes": 14}}
+    f = {"category": "음식점", "stay_min": 60, "leg_to_next": {"mode": "taxi", "minutes": 10}}
+    rest = [{"category": "문화시설", "stay_min": 60, "leg_to_next": {"mode": "walk", "minutes": 5}} for _ in range(3)]
+    day = {"day": 1, "start": "10:00", "items": [a, f] + rest + [{"category": "관광지", "stay_min": 60, "leg_to_next": None}]}
+    assert arrivals(day["items"], day["start"])[1][0] == 11 * 60 + 14  # 실측 반영 후 11:14 도착 (점심 시간대 밖)
+    assert "10:20" in fit_lunch(day) and day["start"] == "10:20"
+    assert arrivals(day["items"], day["start"])[1][0] == 11 * 60 + 34   # 11:34 도착 → 시간대 안
+    assert fit_lunch(day) is None                                       # 이미 맞으면 그대로
+
+
+def test_only_eating_candidates_do_not_shrink_below_minimum():  # 실내 명소 0곳(먹는 곳만) → 1곳짜리 코스가 되던 문제
+    out = build_course(_eat_mix(8, 2, 0), Conditions(query="x", indoor=True, gu=["수영구"]))
+    assert len(out["days"][0]["items"]) >= 2
+
+
+def test_fit_lunch_rounds_earlier_shift_enough():  # 13:37 도착 → 5분이 아니라 10분 당겨 13:27 (반올림 오류로 13:32가 되던 문제)
+    from services.planner import fit_lunch
+    s = [{"category": "문화시설", "stay_min": 60, "leg_to_next": {"mode": "walk", "minutes": 17}} for _ in range(3)]
+    day = {"day": 1, "start": "10:00", "items": s + [{"category": "음식점", "stay_min": 60, "leg_to_next": {"mode": "walk",
+           "minutes": 5}}, {"category": "관광지", "stay_min": 60, "leg_to_next": None}]}
+    assert arrivals(day["items"], "10:00")[3][0] == 13 * 60 + 51
+    fit_lunch(day)
+    assert day["start"] == "09:35" and arrivals(day["items"], day["start"])[3][0] == 13 * 60 + 26
+
+
+def test_multi_day_lunch_never_repeats_place():  # 1박 2일에서 같은 식당이 두 날 모두 점심으로 들어가던 문제
+    far = [{**p, "place_id": 700 + p["place_id"], "lat": p["lat"] + 0.08} for p in _mixed(0, 8)]
+    cands = _mixed(0, 8) + far + [{**_mixed(1, 0)[0], "place_id": 900, "name": "유일한식당", "sim": 0.1, "lat": 35.14}]
+    days = build_course(cands, Conditions(query="x", days=2))["days"]
+    ids = [i["place_id"] for d in days for i in d["items"]]
+    assert len(ids) == len(set(ids)) and ids.count(900) <= 1

@@ -70,6 +70,9 @@ search:                             # COMP-05, FR-002
   candidates_n: 30
   min_candidates: 2
   relax_order: [open_hours, indoor, gu]
+  indoor_categories: [문화시설]       # "실내", "비 오는 날" 요청이면 이 분류(박물관·전시관 등)를 따로 찾아 후보에 넣고 우선한다
+  min_indoor_attractions: 3         # 초안: 그 구의 실내 명소가 이보다 적으면 다른 구까지 찾는다(동선 반경 안의 것만 쓰인다)
+  food_candidates_n: 10             # 초안: 후보에 식당이 거의 없을 때 점심용으로 보탤 식당 수(일수당)
 
 score:                              # COMP-06, S(p) = w1·sim + w2·pref + w3·weather − w4·dist
   w_sim: 0.4
@@ -86,7 +89,9 @@ course:                             # COMP-06, FR-006, FR-014
   max_days: 3
   default_stay_min: 60              # 초안: 장소당 평균 체류
   day_start: "10:00"                # 초안: 하루 출발 시각 (화면의 방문 예정 시각 계산 기준)
-  lunch_window: ["11:30", "14:00"]  # 초안: "카페 추가"는 이 시간대의 식당 다음, 없으면 가운데 시각에 가까운 틈에 넣는다
+  lunch_window: ["11:30", "13:30"]  # 초안: 점심 시간대. 체류 합이 lunch_min_stay_min 이상이면 이 사이에 도착하는 식당 1곳을 보장
+  lunch_min_stay_min: 300           # 초안: 하루 체류 합이 5시간 이상이면 점심 식당을 넣는다
+  cafe_per_day: 1                   # 초안: 하루 카페 상한. 식당·카페는 연달아 두지 않는다(먹는 곳은 하루 장소의 절반 이하)
   default_move_min: 20              # 초안: K 계산용 평균 이동 시간
   walk_radius_km: 2.5               # 초안: 도보만일 때 하루 장소를 먼저 기준 장소 반경 안에서 고른다(모자라면 가까운 순)
   day_radius_km: 8                  # 초안: auto/taxi일 때 같은 기준의 반경

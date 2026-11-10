@@ -176,6 +176,22 @@ def search(cond: Conditions, n: int | None = None, embed=embed_texts) -> tuple[l
         vec, notices = None, ["AI 검색을 쓸 수 없어 키워드와 조건으로 찾았습니다."]
         _query_fn = lambda v, c, k: _keyword_query(c, k)  # noqa: E731
     hits = _query_fn(vec, cond, n)
+    if cond.indoor and not cond.categories:
+        # "실내"·"비 오는 날": 실내 필터만 걸면 실내로 분류된 식당·카페가 후보를 채운다 → 실내 명소를 따로 찾아 앞에 둔다
+        attr = _query_fn(vec, replace(cond, categories=cfg["indoor_categories"]), n)
+        if len(attr) < cfg["min_indoor_attractions"] and cond.gu:  # 그 구에 실내 명소가 거의 없으면 다른 구까지
+            seen = {h["place_id"] for h in attr}
+            attr += [h for h in _query_fn(vec, replace(cond, gu=[], categories=cfg["indoor_categories"]), n)
+                     if h["place_id"] not in seen]
+            notices.append(f"{', '.join(cond.gu)}에는 실내 명소가 적어 가까운 다른 구까지 찾았습니다.")
+        ids = {h["place_id"] for h in attr}
+        hits = attr + [h for h in hits if h["place_id"] not in ids]
+    food = config()["classify"]["food"]["category"]
+    if not cond.categories and sum(h["category"] == food for h in hits) < 2 * min(cond.days, 3):
+        # 의미 검색만으로는 식당이 하나도 안 들어올 수 있다("부산 전체 여행"): 점심용 식당 후보를 뒤에 보탠다
+        ids = {h["place_id"] for h in hits}
+        hits += [h for h in _query_fn(vec, replace(cond, categories=[food]), cfg["food_candidates_n"] * min(cond.days, 3))
+                 if h["place_id"] not in ids]
     for step in cfg["relax_order"]:
         if len(hits) >= cfg["min_candidates"]:
             break

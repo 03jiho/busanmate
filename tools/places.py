@@ -4,7 +4,7 @@ import logging
 import re
 from dataclasses import replace
 
-from services.planner import arrivals, build_course, day_minutes, detour_km, items_for, lunch_slot, removal_saving
+from services.planner import arrivals, build_course, day_minutes, detour_km, items_for, lunch_slot, meals_ok, removal_saving
 from services.search import fetch_places, places_where, search, theme_points
 from settings import config
 from tools.base import BaseTool, ToolResult, register
@@ -95,8 +95,9 @@ class EditCourse(BaseTool):
         if op == "remove":
             if len(items) <= c["places_per_day_min"]:
                 return fail("하루 최소 장소 수라 더 뺄 수 없습니다.")
-            if not 0 <= idx < len(items):  # 몇 번째인지 안 정했으면 빼서 가장 많이 줄어드는 곳
-                idx = max(range(len(items)), key=lambda i: removal_saving(items, i, mode))
+            if not 0 <= idx < len(items):  # 몇 번째인지 안 정했으면 빼서 가장 많이 줄어드는 곳 (식당·카페가 붙지 않게)
+                ok = [i for i in range(len(items)) if meals_ok(items[:i] + items[i + 1:])] or range(len(items))
+                idx = max(ok, key=lambda i: removal_saving(items, i, mode))
             saved, gone = removal_saving(items, idx, mode), items.pop(idx)
             note = f"{day_no}일차에서 '{gone['name']}'을(를) 빼서 약 {saved}분 줄였어요."
         else:

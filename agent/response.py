@@ -65,6 +65,24 @@ def verify_places(text: str, allowed: dict[int, str]) -> tuple[str, list[int]]:
     return "".join(out).strip(), dropped
 
 
+def _says_something(text: str | None, p: dict) -> bool:
+    """장소명만 되풀이한 문구("동삼정")는 빈 설명으로 본다."""
+    norm = re.sub(r"\W", "", text or "")
+    return len(norm) >= 8 and norm != re.sub(r"\W", "", p["name"])
+
+
+def intro_line(p: dict) -> str | None:
+    """LLM이 실패했을 때의 추천 이유: DB 소개 문구 중 장소명이 아닌 첫 줄(원천 설명의 첫 줄은 제목인 경우가 많다)."""
+    return next((line.strip()[:80] for line in (p.get("description") or "").split("\n")
+                 if _says_something(line, p)), None)
+
+
+def fallback_line(p: dict) -> str:
+    """설명이 빈 카드용 한 줄: "중구 용두산길 37-55에 있는 공원·자연입니다." (주소가 없으면 구)."""
+    addr = re.sub(r"^부산(광역시)?\s*", "", (p.get("address") or "").split("\n")[0]).strip() or p.get("gu") or "부산"
+    return f"{addr}에 있는 {p['category']}입니다."
+
+
 def rule_summary(course: dict | None, names: list[str], dates: list | None = None) -> str:
     """LLM이 실패했을 때의 요약: 장소 순서와 이동 방법을 코드로 쓴다 (DB 이름만 쓰므로 근거는 그대로 DB)."""
     if not course:
@@ -128,8 +146,10 @@ def build_response(state: dict) -> dict:
         log.warning("response LLM 실패: %s %s", type(e).__name__, reason)
         answer = rule_summary(course, [places[i]["name"] for i in ids], state.get("dates"))
         # 추천 이유는 DB 설명의 첫 줄(공공데이터 장소 소개 문구)로 대신한다. 근거는 여전히 DB뿐이다 (AI-REQ-01·02)
-        reasons = {i: (places[i]["description"] or "").split("\n")[0][:80] or None for i in ids}
+        reasons = {i: intro_line(places[i]) for i in ids}
         notices.append("AI 설명을 만들지 못해 추천 이유를 장소 소개 문구로 대신합니다.")
+    # 추천 이유가 빈 카드(LLM이 빠뜨렸거나 소개 문구가 없음)는 분류와 주소로 만든 한 줄로 채운다 (DB 정보만 씀)
+    reasons = {i: reasons.get(i) if _says_something(reasons.get(i), places[i]) else fallback_line(places[i]) for i in ids}
 
     if course:
         for d in course["days"]:
