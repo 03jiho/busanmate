@@ -61,7 +61,7 @@ def eating(p: dict) -> bool:
     return p["category"] in (_food(), config()["classify"]["cafe"]["category"])
 
 
-def _same(a: dict, b: dict) -> bool:
+def same_place(a: dict, b: dict) -> bool:
     """같은 장소로 본다: 띄어쓰기만 다른 같은 이름(원천 중복 "오륙도 가원"/"오륙도가원"),
     또는 같은 좌표(합쳐진 이름을 나눠 저장한 "중앙공원"/"민주공원")."""
     return a["name"].replace(" ", "") == b["name"].replace(" ", "") or (a["lat"], a["lng"]) == (b["lat"], b["lng"])
@@ -74,7 +74,7 @@ def select(scored: list[dict], k: int, food_cap: int | None = None, mixed: bool 
     lam, c = config()["score"]["diversity_penalty"], config()["course"]
     cafe = config()["classify"]["cafe"]["category"]
     chosen = [p for p in scored if p.get("must")][:k]  # 사용자가 이름으로 콕 집은 장소는 먼저 넣는다
-    pool = [p for p in scored if p not in chosen and not any(_same(p, q) for q in chosen)]
+    pool = [p for p in scored if p not in chosen and not any(same_place(p, q) for q in chosen)]
     while pool and len(chosen) < k:
         drop = set()
         if food_cap is not None and sum(q["category"] == _food() for q in chosen) >= food_cap:
@@ -87,7 +87,7 @@ def select(scored: list[dict], k: int, food_cap: int | None = None, mixed: bool 
             pool = [p for p in pool if p["category"] not in drop]
         best = max(pool, key=lambda p: p["score"] - lam * sum(q["category"] == p["category"] for q in chosen))
         chosen.append(best)
-        pool = [p for p in pool if not _same(p, best)]
+        pool = [p for p in pool if not same_place(p, best)]
     return chosen
 
 
@@ -184,11 +184,11 @@ def plan_day(scored: list[dict], k: int, hours: float, mode: str, check_variety:
     food = _food()
     if meals and needs_lunch(seq) and not any(p["category"] == food for p in seq):
         # 체류 5시간 이상인데 식당이 없다: 가까운 식당 중 점수가 높은 곳을 넣는다(먹는 곳이 아닌 최저점 장소와 바꿈)
-        foods = sorted((p for p in group if p["category"] == food and not any(_same(p, q) for q in seq)),
+        foods = sorted((p for p in group if p["category"] == food and not any(same_place(p, q) for q in seq)),
                        key=lambda p: (dist(p) > c["day_radius_km"], -p["score"]))
         if not foods:  # 다일 일정은 그날 묶음에 식당이 없을 수 있다: 전체 후보 중 가까운 식당(동선 반경 2배 안)
             foods = sorted((p for p in lunch_pool or [] if p["category"] == food and dist(p) <= 2 * c["day_radius_km"]
-                            and not any(_same(p, q) for q in seq)), key=dist)
+                            and not any(same_place(p, q) for q in seq)), key=dist)
         if foods:
             victims = [p for p in seq if not p.get("must") and not eating(p)]
             if len(seq) >= k and victims:
@@ -217,7 +217,7 @@ def plan_day(scored: list[dict], k: int, hours: float, mode: str, check_variety:
             seq.remove(victim)
             clat, clng = _centroid(seq)
             full = food_cap is not None and sum(p["category"] == food for p in seq) >= food_cap  # 음식점 상한 유지
-            alts = [p for p in group if p not in seq and not any(_same(p, q) for q in seq) and p is not victim
+            alts = [p for p in group if p not in seq and not any(same_place(p, q) for q in seq) and p is not victim
                     and (not eating(p) if eat_over else p["category"] != top) and not (full and p["category"] == food)]
             if not alts and len(seq) < min_k:  # 바꿀 후보가 없어 하루 최소보다 줄어든다: 줄이지 않고 순서 규칙을 푼다
                 seq.append(victim)

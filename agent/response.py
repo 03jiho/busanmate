@@ -5,6 +5,7 @@ import logging
 import re
 
 from agent import prompt
+from agent.explain import enrich
 from services.llm import get_llm
 from services.search import fetch_places, source_of
 
@@ -157,6 +158,7 @@ def build_response(state: dict) -> dict:
         for d in course["days"]:
             for item in d["items"]:
                 item["name"], item["reason"] = places[item["place_id"]]["name"], reasons.get(item["place_id"])
+        enrich(course, places, state.get("conditions"))  # 왜 이곳?, 출처 확인 수, 예상 시간 계산 방식, 예상 비용
     sources = [source_of(places[i]) for i in ids] + list(state.get("sources") or [])
     return {"answer": answer, "course": course, "sources": sources, "notices": notices,
             "places": None if course else [{**source_of(places[i]), "category": places[i]["category"],

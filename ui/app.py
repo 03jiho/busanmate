@@ -12,6 +12,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
 from export import ACCENT, WALK, course_pdf, day_label, hm, leg_text, link_of, schedule, share_text, summary_line
+from streamlit_sortables import sort_items
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 API_URL = os.environ.get("API_URL", "http://localhost:8000")
@@ -69,6 +70,11 @@ h1 {{font-size: 1.6rem !important; font-weight: 700 !important; letter-spacing: 
 .st-key-steps {{text-align: center; margin: .6rem 0 .2rem;}}
 .badges {{display: flex; flex-wrap: wrap; justify-content: center; gap: .4rem; margin: 1.4rem 0 .4rem;}}
 .badges span {{font-size: .75rem; color: #6b6760; border: 1px solid #e3e0d8; border-radius: 999px; padding: .1rem .6rem; background: #fff;}}
+.trusts {{display: flex; flex-wrap: wrap; gap: .35rem; margin: 0 0 .6rem;}}
+.trust {{font-size: .78rem; padding: .15rem .6rem; border-radius: 999px; border: 1px solid;}}
+.trust.ok {{color: #1d5fa7; border-color: #b9cfe8; background: #f2f7fc;}}
+.trust.warn {{color: #8a5a00; border-color: #ead9b0; background: #fdf8ec;}}
+.est {{border-bottom: 1px dotted #8a857c; cursor: help;}}
 .footer {{color: #8a857c; font-size: .75rem; line-height: 1.6; border-top: 1px solid #e3e0d8;
   padding-top: .8rem; margin-top: 2rem;}}
 </style>"""
@@ -193,8 +199,10 @@ def link_md(s: dict | None) -> str:
     return "원본 링크 없음"
 
 
-def place_card(key: str, title: str, sub: str, reason: str | None, source: dict | None) -> None:
-    """장소 카드: 이름, 시각·분류, 추천 이유, 썸네일(이용 조건 확인된 공공데이터 이미지), 출처·원본 링크·이용 조건 (FR-003)."""
+def place_card(key: str, title: str, sub: str, reason: str | None, source: dict | None,
+               why: list[str] | None = None, edit: tuple | None = None) -> None:
+    """장소 카드: 이름, 시각·분류, 추천 이유, 왜 이곳?(요청 조건과 맞은 항목), 썸네일, 출처·원본 링크·이용 조건 (FR-003).
+    edit=(r, day, index)이면 빼기·다른 곳으로 교체 버튼을 붙인다(채팅을 거치지 않는 직접 편집)."""
     with st.container(border=True, key=key):
         image = (source or {}).get("image")
         body = st
@@ -204,12 +212,105 @@ def place_card(key: str, title: str, sub: str, reason: str | None, source: dict 
         body.markdown(f"**{title}**  \n:gray[{sub}]")
         if reason:
             body.write(reason)
+        if why:
+            st.caption(f"왜 이곳? {' · '.join(why)}")
         if source:
             link = link_md(source)
             photo = f" · 사진: {image['license']}" if image else ""
             st.caption(f"출처: {source['label']} · {link} · {source['license']}{photo}")
         else:
             st.caption("출처 정보 없음 · 원본 링크 없음")
+        if edit:
+            r, day, index = edit
+            a, b = st.columns(2)
+            a.button("빼기", key=f"rm-{key}", icon=":material/close:", use_container_width=True,
+                     on_click=remove_place, args=(r, day, index))
+            b.button("다른 곳으로 교체", key=f"alt-{key}", icon=":material/swap_horiz:", use_container_width=True,
+                     on_click=load_alternatives, args=(key, day, index))
+            alts = ss.get(f"alts-{key}")
+            if alts:
+                if "error" in alts:
+                    st.caption(alts["error"]["message"])
+                for n, alt in enumerate(alts.get("alternatives") or []):
+                    st.button(f"{alt['name']} · {alt['gu']} · 동선 +{alt['extra_km']}km", key=f"pick-{key}-{n}",
+                              help=alt["intro"], use_container_width=True,
+                              on_click=replace_place, args=(r, day, index, alt["place_id"]))
+                if alts.get("alternatives") == []:
+                    st.caption("같은 분류의 다른 후보가 없어요.")
+
+
+def _apply(r: dict, days: list[list[int]]) -> None:
+    """직접 편집 결과(날짜별 place_id 순서)를 서버에 보내고, 이동 시간을 다시 계산한 코스로 화면 결과를 바꾼다."""
+    res = api("PUT", f"/api/session/{ss.sid}/course", json={"days": days})
+    if "error" in res:
+        ss.edit_error = res["error"]["message"]
+        return
+    keep = [x for x in r.get("sources") or [] if "place_id" not in x and not x["label"].startswith("기상청")]
+    r["course"], r["sources"] = res["course"], res["sources"] + keep
+    r["notices"] = [n for n in r.get("notices") or [] if "찾지 못해" in n] + res.get("notices", [])
+    for k in [k for k in ss if str(k).startswith(("pdf-", "alts-", "share-"))]:
+        del ss[k]
+
+
+def _ids(r: dict) -> list[list[int]]:
+    return [[i["place_id"] for i in d["items"]] for d in r["course"]["days"]]
+
+
+def remove_place(r: dict, day: int, index: int) -> None:
+    days = _ids(r)
+    if len(days[day - 1]) <= 1:
+        ss.edit_error = "하루에 한 곳은 남겨 두어야 해요."
+        return
+    days[day - 1].pop(index)
+    _apply(r, days)
+
+
+def load_alternatives(key: str, day: int, index: int) -> None:
+    ss[f"alts-{key}"] = api("GET", f"/api/session/{ss.sid}/alternatives", params={"day": day, "index": index})
+
+
+def replace_place(r: dict, day: int, index: int, place_id: int) -> None:
+    days = _ids(r)
+    days[day - 1][index] = place_id
+    _apply(r, days)
+
+
+def reorder(r: dict, day: int, labels: list[str], order: list[str]) -> None:
+    days = _ids(r)
+    days[day - 1] = [days[day - 1][labels.index(x)] for x in order]
+    _apply(r, days)
+
+
+def trust_badges(r: dict) -> None:
+    """근거 있는 코스: 출처 확인 배지, 없는 장소 안내를 배지 옆에도."""
+    src = (r.get("course") or {}).get("sourced")
+    spans = []
+    if src:
+        ok = src["count"] == src["total"]
+        text = f"공공데이터 장소 {src['total']}곳 · " + ("모두 출처 확인됨" if ok else f"{src['count']}곳 출처 확인")
+        spans.append(f"<span class='trust {'ok' if ok else 'warn'}'>{html.escape(text)}</span>")
+    spans += [f"<span class='trust warn'>{html.escape(n)}</span>" for n in r.get("notices") or [] if "찾지 못해" in n]
+    if spans:
+        st.markdown(f"<div class='trusts'>{''.join(spans)}</div>", unsafe_allow_html=True)
+
+
+def budget_box(course: dict) -> None:
+    """예상 비용(식비 1인 + 택시비 1대)과 사이드바 예산 비교."""
+    b = course.get("budget")
+    if not b:
+        return
+    est = " · 일부 추정" if b.get("estimated") else ""
+    st.markdown(f"**예상 비용** 식비 {b['meals']:,}원(1인) · 택시비 {b['taxi']:,}원(1대) · 합계 **{b['total']:,}원**"
+                f"<span style='color:#8a857c'>{est}</span>", unsafe_allow_html=True,
+                help="식비는 공공데이터 맛집 설명의 대표 메뉴 가격(없으면 식당 12,000원·카페 6,000원), 택시비는 카카오 실측 "
+                     "요금(없으면 부산 택시 요금표: 기본 4,800원·2km, 132m당 100원)으로 계산해요.")
+    if len(b["days"]) > 1:
+        st.caption(" / ".join(f"{d['day']}일차 {d['total']:,}원" for d in b["days"]))
+    budget = ss.get("budget") or 0
+    if budget and b["total"] > budget:
+        st.warning(f"예산 {budget:,}원보다 {b['total'] - budget:,}원 많아요. '더 짧게'를 누르거나 택시 구간을 줄여 보세요.")
+    elif budget:
+        st.success(f"예산 {budget:,}원 안이에요. {budget - b['total']:,}원이 남아요.")
 
 
 def chips(r: dict) -> None:
@@ -259,11 +360,14 @@ def show_photo_result(r: dict, key: str) -> None:
             st.button("코스에 넣기", key=f"add-{k}", on_click=ask, args=(f"{m['name']}을(를) 코스에 추가해줘",))
 
 
-def show_result(r: dict, key: str, latest: bool = False, stream: bool = False) -> None:
+def show_result(r: dict, key: str, latest: bool = False, stream: bool = False, readonly: bool = False) -> None:
     if "error" in r:
         st.error(r["error"]["message"])
         return
     chips(r)
+    trust_badges(r)
+    if latest and (err := ss.pop("edit_error", None)):
+        st.error(err)
     for n in r.get("notices") or []:  # 안내(날씨 미반영, 추정치, 조건 완화 등)는 맨 위에
         st.info(n)
     if stream:  # 새 답변은 문장이 흘러나오듯 (verify_places를 거친 뒤의 문장이다)
@@ -278,6 +382,8 @@ def show_result(r: dict, key: str, latest: bool = False, stream: bool = False) -
             col.button(ex, key=f"ex-{key}-{n}", on_click=ask, args=(ex,), use_container_width=True)
     by_place = {s["place_id"]: s for s in r.get("sources") or [] if "place_id" in s}
     course = r.get("course")
+    editable = latest and not readonly
+    basis = (course or {}).get("estimate_basis") or "직선거리 기반 추정치예요."
     if course and course.get("days"):
         def rain(p):
             return "" if p is None else f" · {'비' if p >= RAIN_THRESHOLD else '강수'} {p:.0f}%"
@@ -293,12 +399,24 @@ def show_result(r: dict, key: str, latest: bool = False, stream: bool = False) -
                 with left:
                     show_map(d["items"], keys)
                 with right:
-                    for i, k, (arrive, leave) in zip(d["items"], keys, s["times"]):
+                    for n, (i, k, (arrive, leave)) in enumerate(zip(d["items"], keys, s["times"])):
+                        won = i.get("price_won")
+                        price = f" · 1인 {'약 ' if i.get('price_estimated') else ''}{won:,}원" if won else ""
                         place_card(k, f"{i['order']}. {i['name']}",
-                                   f"{arrive}–{leave} · 체류 {hm(i.get('stay_min') or 60)} · {i['category']}",
-                                   i.get("reason"), by_place.get(i["place_id"]))
+                                   f"{arrive}–{leave} · 체류 {hm(i.get('stay_min') or 60)} · {i['category']}{price}",
+                                   i.get("reason"), by_place.get(i["place_id"]), i.get("why"),
+                                   (r, d["day"], n) if editable else None)
                         if leg := i.get("leg_to_next"):  # 지도 선과 같은 모양: 도보 점선, 택시 실선
-                            st.markdown(f"<div class='leg {leg['mode']}'>{leg_text(leg)}</div>", unsafe_allow_html=True)
+                            tip = html.escape(basis, quote=True)
+                            text = html.escape(leg_text(leg)).replace("(예상)", f"<span class='est' title='{tip}'>(예상)</span>")
+                            st.markdown(f"<div class='leg {leg['mode']}'>{text}</div>", unsafe_allow_html=True)
+                if editable and len(d["items"]) > 1:  # 드래그로 순서 바꾸기 → 이동 시간·시각 바로 다시 계산
+                    with st.expander("드래그해서 순서 바꾸기"):
+                        labels = [f"{i['order']}. {i['name']}" for i in d["items"]]
+                        order = sort_items(labels, direction="vertical", key=f"sort-{key}-{d['day']}-{'|'.join(labels)}")
+                        if order != labels:
+                            reorder(r, d["day"], labels, order)
+                            st.rerun()
     for n, p in enumerate(r.get("places") or []):
         place_card(f"card-{key}-s-{n}", p["name"], f"{p['category']} · {p['gu']}", p.get("reason"),
                    by_place.get(p["place_id"]))
@@ -307,15 +425,44 @@ def show_result(r: dict, key: str, latest: bool = False, stream: bool = False) -
         link = link_md(s)
         st.caption(f"출처: {s['label']} · {link} · {s['license']}")
     if course and course.get("days"):
-        export_tools(r, key)
-        if latest:
+        budget_box(course)
+        export_tools(r, key, readonly)
+        if editable:
             st.caption("코스 고치기")
             for col, (label, kind) in zip(st.columns(len(EDITS)), EDITS.items()):
                 col.button(label, key=f"edit-{key}-{label}", on_click=ask, args=(label, kind), use_container_width=True)
 
 
-def export_tools(r: dict, key: str) -> None:
-    """PDF 내보내기(만들기 → 내려받기, 지도 타일을 매 화면마다 받지 않도록)와 공유용 요약 복사."""
+def share_url(share_id: str) -> str:
+    base = getattr(st.context, "url", None) or "http://localhost:8501"
+    return f"{base.split('?')[0].rstrip('/')}/?course={share_id}"
+
+
+def save_course(r: dict, key: str, keep: bool) -> None:
+    """서버가 세션의 코스를 저장하고 id를 준다. keep이면 '저장한 코스' 목록(이 브라우저 세션)에도 넣는다."""
+    res = api("POST", f"/api/session/{ss.sid}/share")
+    if "error" in res:
+        ss.edit_error = res["error"]["message"]
+        return
+    ss[f"share-{key}"] = res["share_id"]
+    if keep:
+        days = r["course"]["days"]
+        n = sum(len(d["items"]) for d in days)
+        title = f"{day_label(r.get('dates') or [], 1) or '코스'} · {days[0]['items'][0]['name']} 외 {n - 1}곳"
+        ss.setdefault("saved", []).insert(0, (title, res["share_id"]))
+
+
+def export_tools(r: dict, key: str, readonly: bool = False) -> None:
+    """PDF 내보내기(만들기 → 내려받기, 지도 타일을 매 화면마다 받지 않도록), 공유용 요약 복사, 공유 링크·저장."""
+    if not readonly:
+        a, b = st.columns(2)
+        a.button("공유 링크 만들기", key=f"sh-{key}", icon=":material/link:", use_container_width=True,
+                 on_click=save_course, args=(r, key, False))
+        b.button("코스 저장", key=f"sv-{key}", icon=":material/bookmark:", use_container_width=True,
+                 on_click=save_course, args=(r, key, True))
+        if sid := ss.get(f"share-{key}"):
+            st.caption("링크를 연 사람은 읽기 전용으로 볼 수 있어요. 오른쪽 위 아이콘으로 복사하세요.")
+            st.code(share_url(sid), language=None)
     left, right = st.columns(2)
     with left:
         if ss.get(f"pdf-{key}"):
@@ -335,6 +482,17 @@ def photo_uploader(key: str) -> None:
     photo = st.file_uploader("JPG·PNG, 10MB까지", type=["jpg", "jpeg", "png"], key=key)
     if photo and st.button("비슷한 곳 찾기", key=f"{key}-go", use_container_width=True, type="primary"):
         ss.queued_photo = (photo.name, photo.getvalue(), photo.type)  # 브라우저 세션 메모리에만, 저장하지 않는다
+
+
+def load_saved(share_id: str) -> None:
+    """저장한 코스를 이 세션의 직전 코스로 불러와 대화에 보여 준다(불러온 뒤에도 편집할 수 있다)."""
+    res = api("POST", f"/api/session/{ss.sid}/load/{share_id}")
+    if "error" in res:
+        ss.edit_error = res["error"]["message"]
+        return
+    ss.history += [{"role": "user", "content": "저장한 코스 불러오기"},
+                   {"role": "assistant", "result": {**res, "answer": "저장한 코스를 불러왔어요.", "intent": "course",
+                                                    "notices": []}}]
 
 
 def new_course() -> None:
@@ -400,6 +558,14 @@ with st.sidebar:
         api("PUT", f"/api/session/{ss.sid}/preferences", json=prefs)
         ss.prefs = prefs
     st.caption("질문에 쓴 조건이 있으면 그쪽을 먼저 따릅니다.")
+    st.number_input("1인 예산(원)", min_value=0, step=10000, key="budget",
+                    help="식비(1인)와 택시비(1대) 합계가 이보다 많으면 코스 아래에 알려 줘요. 0이면 비교하지 않아요.")
+    st.caption("코스 아래 예상 비용과 비교해요.")
+    if ss.get("saved"):
+        st.header("저장한 코스")
+        st.caption("이 브라우저 탭을 닫으면 목록이 사라져요. 공유 링크는 계속 열 수 있어요.")
+        for n, (title, share_id) in enumerate(ss.saved):
+            st.button(title, key=f"load-{n}-{share_id}", use_container_width=True, on_click=load_saved, args=(share_id,))
 
     if ss.history or busy:  # 첫 화면에서는 본문 카드에 업로더가 있고, 대화가 시작되면 사이드바로 옮긴다
         st.header("사진으로 찾기")
@@ -416,6 +582,19 @@ with st.sidebar:
             st.json(api("GET", f"/api/admin/ingest/{ss.run_id}", headers={"X-Admin-Token": token}))
 
 # --- 본문: 대화 (UI-01, UI-02) ---
+shared = st.query_params.get("course")
+if shared and busy:  # 공유 화면에서 질문을 하면 일반 화면으로
+    st.query_params.clear()
+elif shared:  # 공유 링크: 읽기 전용 (편집·저장 버튼 없음, PDF·요약 복사는 그대로)
+    payload = api("GET", f"/api/course/{shared}")
+    st.markdown("<div class='brand'>BusanMate</div>", unsafe_allow_html=True)
+    st.caption("공유된 코스예요. 읽기 전용이라 고칠 수 없어요.")
+    if "error" in payload:
+        st.error(payload["error"]["message"])
+    else:
+        show_result({**payload, "answer": "", "intent": "course", "notices": []}, key="shared", readonly=True)
+    st.button("나도 코스 짜기", type="primary", on_click=st.query_params.clear)
+    st.stop()
 if ss.history or busy:  # 대화 중: 히어로는 숨기고 작은 제목과 "새 코스"만
     left, right = st.columns([5, 1], vertical_alignment="center")
     left.markdown("<div class='brand'>BusanMate</div>", unsafe_allow_html=True)

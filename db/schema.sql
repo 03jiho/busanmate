@@ -58,3 +58,10 @@ CREATE TABLE IF NOT EXISTS ingest_log (
     status       VARCHAR(20) NOT NULL,
     message      TEXT
 );
+
+-- 공유 링크·저장한 코스 (/?course=<share_id>, 읽기 전용). 서버가 세션의 직전 코스로 만든 값만 저장한다
+CREATE TABLE IF NOT EXISTS shared_course (
+    share_id   VARCHAR(16) PRIMARY KEY,
+    payload    JSONB       NOT NULL,            -- {course, conditions, dates, sources}
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

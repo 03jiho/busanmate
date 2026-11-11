@@ -360,3 +360,52 @@ def test_outside_busan(fake, msg, outside):
     assert (r["intent"] == "outside") is outside
     if outside:
         assert r["answer"] == response.OUTSIDE and r["tool_calls"] == [] and "부산" in r["suggest"]
+
+
+# --- 코스 직접 편집(드래그·빼기·교체), 근거 표시 ---
+def _course_session(fake):
+    sid = str(uuid.uuid4())
+    fake(FakeLLM({"intent": "course", "query": "바다", "gu": ["중구"], "start_date": "2026-11-07", "theme": "바다"},
+                 plan=[[("search_places", {}), ("build_course", {})], [("get_route_times", {})]]))
+    return sid, chat(sid, "이번 토요일 중구 바다 코스")
+
+
+def test_response_has_why_sourced_basis_budget(fake):
+    _, r = _course_session(fake)
+    course = r["course"]
+    assert course["sourced"]["count"] == course["sourced"]["total"] == sum(len(d["items"]) for d in course["days"])
+    assert all(i["why"] for d in course["days"] for i in d["items"])
+    assert any("테마 '바다'" in w for d in course["days"] for i in d["items"] for w in i["why"])  # 해변 분류
+    assert "보정계수" in course["estimate_basis"] and course["budget"]["total"] >= 0
+
+
+def test_drag_reorder_and_remove_recompute_without_chat(fake, monkeypatch):
+    from agent import course_ops
+    monkeypatch.setattr(course_ops, "fetch_places", lambda ids: {c["place_id"]: c for c in CANDS if c["place_id"] in ids})
+    sid, r = _course_session(fake)
+    ids = [i["place_id"] for i in r["course"]["days"][0]["items"]]
+    rev = course_ops.apply_order(sid, [list(reversed(ids))])        # 드래그: 순서를 뒤집는다
+    items = rev["course"]["days"][0]["items"]
+    assert [i["place_id"] for i in items] == list(reversed(ids))     # 사용자가 정한 순서 그대로
+    assert [i["order"] for i in items] == list(range(1, len(ids) + 1)) and items[-1]["leg_to_next"] is None
+    assert session.get(sid)["last_course"]["days"][0]["items"][0]["place_id"] == ids[-1]  # 세션에도 반영
+    out = course_ops.apply_order(sid, [list(reversed(ids))[1:]])     # X: 한 곳 빼기
+    assert len(out["course"]["days"][0]["items"]) == len(ids) - 1 and all(i["reason"] for i in out["course"]["days"][0]["items"])
+    with pytest.raises(course_ops.EditError):
+        course_ops.apply_order(sid, [[ids[0], ids[0]]])              # 같은 장소 두 번은 안 된다
+
+
+def test_alternatives_same_category_not_in_course(fake, monkeypatch):
+    from agent import course_ops
+    sid, r = _course_session(fake)
+    cur = r["course"]["days"][0]["items"][0]
+    extra = [{**c, "place_id": 800 + n, "name": f"대안{n}", "lat": c["lat"] + 0.001} for n, c in enumerate(CANDS)]
+    monkeypatch.setattr(course_ops, "places_where", lambda category=None, indoor=None:
+                        [c for c in CANDS + extra if c["category"] == category])
+    alts = course_ops.alternatives(sid, 1, 0)
+    used = {i["place_id"] for i in r["course"]["days"][0]["items"]}
+    assert 1 <= len(alts) <= 3 and all(a["category"] == cur["category"] and a["place_id"] not in used for a in alts)
+    assert alts == sorted(alts, key=lambda a: a["extra_km"])
+    dup = {**next(c for c in CANDS if c["place_id"] in used - {cur["place_id"]}), "place_id": 999}  # 다른 코스 장소의 원천 중복
+    monkeypatch.setattr(course_ops, "places_where", lambda category=None, indoor=None: [dup])
+    assert all(a["place_id"] != 999 for a in course_ops.alternatives(sid, 1, 0))

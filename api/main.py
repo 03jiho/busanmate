@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException
 
 import db
-from agent import session
+from agent import course_ops, session
 from agent.orchestrator import handle_chat, handle_chat_stream
 from agent.query_parser import themes
 from pipeline import run as pipeline
@@ -37,6 +37,10 @@ log = logging.getLogger("api")
 async def lifespan(app):
     # CLIP 모델을 미리 불러 첫 사진 검색이 늦지 않게 한다 (NFR-002). 서버 시작은 막지 않는다
     threading.Thread(target=image._clip, daemon=True).start()
+    try:  # 공유 코스 테이블: 이미 떠 있는 DB(초기화 스크립트가 다시 돌지 않음)에도 만든다
+        course_ops.ensure_table()
+    except Exception as e:
+        log.warning("shared_course 테이블 준비 실패: %s", type(e).__name__)
     yield
 
 
@@ -202,6 +206,57 @@ def put_preferences(session_id: str, body: Preferences):
 def get_course(session_id: str):
     _check_session(session_id)
     return {"course": session.get(session_id)["last_course"]}
+
+
+# --- 코스 직접 편집·공유 (FR-012): 채팅을 거치지 않고 세션의 직전 코스를 바로 고친다 ---
+class OrderIn(BaseModel):
+    days: list[list[int]] = Field(min_length=1, max_length=3)
+
+
+def _edit(fn, *args):
+    try:
+        return fn(*args)
+    except course_ops.EditError as e:
+        raise ApiError(400, "INVALID_INPUT", str(e))
+
+
+@app.put("/api/session/{session_id}/course")
+def put_course(session_id: str, body: OrderIn):
+    """드래그 순서·빼기·교체 결과(날짜별 place_id 순서) → 이동 시간을 다시 계산한 코스 {course, sources, notices}."""
+    _check_session(session_id)
+    _rate_limit(session_id)
+    return _edit(course_ops.apply_order, session_id, body.days)
+
+
+@app.get("/api/session/{session_id}/alternatives")
+def get_alternatives(session_id: str, day: int, index: int):
+    """'다른 곳으로 교체' 후보 3곳(같은 분류, 동선상 덜 돌아가는 순)."""
+    _check_session(session_id)
+    return {"alternatives": _edit(course_ops.alternatives, session_id, day, index)}
+
+
+@app.post("/api/session/{session_id}/share")
+def post_share(session_id: str):
+    """세션의 직전 코스를 저장하고 공유 id를 돌려준다(/?course=<id>로 읽기 전용 열람)."""
+    _check_session(session_id)
+    _rate_limit(session_id)
+    return {"share_id": _edit(course_ops.share, session_id)}
+
+
+@app.get("/api/course/{share_id}")
+def get_shared(share_id: str):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{4,16}", share_id) or not (payload := course_ops.load(share_id)):
+        raise ApiError(404, "NOT_FOUND", "코스를 찾지 못했어요. 링크를 다시 확인해 주세요.")
+    return payload
+
+
+@app.post("/api/session/{session_id}/load/{share_id}")
+def post_load(session_id: str, share_id: str):
+    """저장한 코스를 이 세션의 직전 코스로 불러온다(불러온 뒤에도 편집할 수 있게)."""
+    _check_session(session_id)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{4,16}", share_id) or not (payload := course_ops.load_into_session(session_id, share_id)):
+        raise ApiError(404, "NOT_FOUND", "코스를 찾지 못했어요.")
+    return payload
 
 
 # --- API-006, 007 (FR-013): 관리자 수집 배치 ---

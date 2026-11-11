@@ -57,6 +57,11 @@ ADR 요약: 001 계층형 모놀리식 API · 002 RAG(속성 필터+벡터) + `[
 | API-006 | POST | `/api/admin/ingest` (X-Admin-Token) | `{sources?}` → `{run_id}` |
 | API-007 | GET | `/api/admin/ingest/{run_id}` | → `{status, new, updated, skipped}` |
 | API-008 | GET | `/api/health` | → `{status}` |
+| (편집) | PUT | `/api/session/{id}/course` | `{days: [[place_id…]…]}`(드래그·빼기·교체 결과) → `{course, sources, notices}` (이동 시간 재계산) |
+| (편집) | GET | `/api/session/{id}/alternatives?day&index` | → `{alternatives: [같은 분류 3곳, 동선 덜 돌아가는 순]}` |
+| (공유) | POST | `/api/session/{id}/share` | → `{share_id}` (세션 코스를 `shared_course`에 저장) |
+| (공유) | GET | `/api/course/{share_id}` | → `{course, conditions, dates, sources}` (읽기 전용 `/?course=<id>`) |
+| (저장) | POST | `/api/session/{id}/load/{share_id}` | 저장한 코스를 세션의 직전 코스로 불러옴 |
 
 - `course`는 날짜별 `items[{order, place_id, name, lat, lng, reason, leg_to_next{minutes, meters, estimated}}]`로 구성한다.
 - 관리자 토큰은 `ADMIN_TOKEN`과 **상수 시간 비교**(`hmac.compare_digest`)한다.
@@ -152,6 +157,7 @@ ADR 요약: 001 계층형 모놀리식 API · 002 RAG(속성 필터+벡터) + `[
 - **카드 문구:** 추천 이유가 비거나 장소명만 되풀이하면(원천 설명 첫 줄이 제목) DB 소개 중 장소명이 아닌 첫 줄을, 그것도 없으면 "주소에 있는 분류입니다."를 쓴다. 원본 제목의 쉼표는 `split_title`로 처리한다. 세 어절 이상인 홍보 문구는 떼고, 나눈 이름이 모두 분류 규칙에 걸리면 장소 여럿(둘째부터 source_id `원본-2`)으로 저장한다. 같은 좌표의 장소는 한 코스에 한 번만 넣는다.
 - **화면 (2026-11-11):** 대기 중에는 `/api/chat/stream`의 실제 진행 단계(조건 해석 → 장소 검색 → 날씨 확인 → 동선 계산 → 요약)를 `st.status`로 보여 준다. 단계는 해석·응답 노드와 도구 호출(`get_stream_writer`)에서 나온다. 예상 시간 문구는 실측(코스 3.7~12.4초, 중앙값 5초)을 바탕으로 '보통 5~15초'로 했다. 새 답변은 `st.write_stream`으로 흘려 보여 주는데, verify_places를 거친 뒤의 문장이다. 지도는 folium이 아니라 카카오맵이다. Streamlit 탭은 보이지 않는 탭을 크기 0으로 그리므로, 지도 iframe 안에서 크기가 바뀌면(ResizeObserver, 처음 크기가 생길 때까지는 300ms 타이머로도 확인) `relayout()`(Leaflet의 invalidateSize에 해당) 뒤 `setBounds`로 다시 맞춘다. 폭 640px 이하에서는 지도 높이가 340px다. 부산이 아닌 지역(서울·제주·도쿄 등, '대구탕' 같은 음식명은 제외)은 intent `outside`다. 검색 없이 "BusanMate는 부산 전용이에요. 부산에서 비슷한 곳을 찾아드릴까요?"와 지역만 '부산'으로 바꾼 `suggest`를 돌려주고, 화면은 '부산에서 찾기'와 예시 질문 버튼을 함께 보여 준다. 원본 링크가 없는 카드는 공공데이터포털 서비스 페이지(config `sources.*.portal_url`, `weather.portal_url`)를 링크한다.
 - **첫 화면 (2026-11-11):** 대화 전에는 `hero()`가 그린다. 슬로건 "말만 하면 부산 하루 코스가 완성돼요"와 보조 문구, 같은 크기의 시작 카드 2개(코스 짜기: "질문 입력하기"를 누르면 하단 입력창에 포커스 / 사진으로 장소 찾기: 본문 업로더), 3단계 안내(Material 아이콘), 예시 카드 3개가 있다. 예시 카드 미리보기는 실제 실행 결과다(`EXAMPLE_CARDS`, 데이터가 바뀌면 다시 확인). 그 밖에 '이런 결과가 나와요' 샘플 이미지(`ui/assets/sample-course.jpg`), '더 알아보기' 접이식, 출처 배지 3개가 있다. 대화가 시작되면 히어로를 숨기고 작은 제목과 "새 코스"(대화를 비우고 새 세션)만 둔다. 사진 업로더는 그때 사이드바로 옮긴다. 사이드바 옵션마다 한 줄 도움말이 있다(동행은 점수에 아직 쓰지 않는다고 적음). 640px 이하에서는 카드가 세로로 쌓이고 높이 맞춤을 푼다. 이모지 대신 Material 아이콘을 쓴다.
+- **직접 편집·공유·근거·예산 (2026-11-11):** 카드 드래그 정렬(`streamlit-sortables`), 빼기, 다른 곳으로 교체는 채팅을 거치지 않는다. 날짜별 place_id 순서를 PUT하면 `course_ops.apply_order`가 순서를 그대로 둔 채 `items_for` → get_route_times(택시 실측·fit_lunch) → `enrich`로 다시 만든다. 교체 후보는 같은 분류에서 앞뒤 장소 사이 우회 거리가 짧은 순으로 고르고, 코스에 있는 곳과 같은 장소(`same_place`: 공백만 다른 이름·같은 좌표)는 뺀다. 공유·저장은 서버가 세션 코스로 만든 payload만 `shared_course`에 넣는다(질문 원문 없음, 만료 없음). '저장한 코스' 목록은 브라우저 세션(`st.session_state`)에만 있다. `agent/explain.enrich`가 카드마다 `why`(요청한 장소·테마(점수와 같은 판정: 분류·키워드·해변 근처)·실내/비 예보·점심 시간·앞 장소에서 걸어서), `sourced`(출처 확인 수), `estimate_basis`('예상' 툴팁), `budget`(`services/budget.py`: 식비 1인은 설명의 대표 메뉴 가격, 없으면 config 기본 단가 / 택시 1대는 카카오 실측, 없으면 부산 요금표 초안)를 붙인다. 화면은 사이드바의 1인 예산과 비교해 경고한다.
 - **ResponseBuilder:** 장소 정보는 DB에서 다시 읽고, LLM에는 `[[id]]` 마커만 쓰게 한다. `verify_places`가 후보 밖 id가 든 문장을 지우고, 남은 마커는 DB 이름으로 바꾼다. 출처는 장소별 제공처, 링크, 이용 조건에 기상청과 축제 출처를 더한다. 마커를 이름으로 바꿀 때 조사가 어색해질 수 있다(예: "해운대과").
 - **날씨:** 단기예보(`getVilageFcst`). 검색 후보들의 중심 좌표를 기상청 격자로 바꿔 조회한다(`latlon_to_grid`, 후보가 없으면 부산시청 98·76). 캐시 키는 발표 시각과 격자다. 9~21시 강수확률 최댓값을 그날 값으로 쓴다. 5일 뒤 날짜는 예보 범위 밖이라 반영하지 않는다(중기예보 엔드포인트 없음).
 - **카카오:** 택시 구간만 실측(시간·거리·요금)하고 저장·캐시하지 않는다. 결과 코드 102/103(출발지·도착지 주변 도로 없음, 산·계곡)은 추정치로 대체한다.
