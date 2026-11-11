@@ -1,7 +1,7 @@
 """근거 있는 코스 (FR-003, AI-REQ-01): 카드마다 "왜 이곳?"(요청 조건과 맞은 항목), 출처 확인 수, 예상 시간 계산 방식,
 예상 비용을 코스에 붙인다. 모두 DB 값과 조건으로 계산한다(LLM 아님)."""
 from services.budget import course_budget
-from services.planner import arrivals
+from services.planner import arrivals, is_outdoor, rainy
 from services.route import haversine_km
 from services.search import theme_points
 from settings import config
@@ -60,6 +60,11 @@ def enrich(course: dict, places: dict[int, dict], cond) -> None:
             sourced += bool(p.get("license"))  # 출처(제공처·이용 조건)가 DB에 있는 장소
             prev = d["items"][k - 1]["leg_to_next"] if k else None
             item["why"] = why(p, cond, d.get("rain_prob"), times[k][0], prev, must, near_points)
+            item["umbrella"] = rainy(d.get("rain_prob")) and is_outdoor(p)  # 비 오는 날 불가피하게 넣은 야외 장소
+            leg = item.get("leg_to_next")
+            if leg and leg["mode"] == "walk" and leg["minutes"] > config()["course"]["walk_taxi_hint_min"]:
+                taxi = config()["travel"]["speed_kmh"]["taxi"]
+                leg["taxi_hint_min"] = max(1, round((leg.get("meters") or 0) / 1000 / taxi * 60))
     course["sourced"] = {"count": sourced, "total": total}
     course["estimate_basis"] = estimate_basis()
     course["budget"] = course_budget(course, places)

@@ -278,3 +278,57 @@ def test_multi_day_lunch_never_repeats_place():  # 1박 2일에서 같은 식당
     days = build_course(cands, Conditions(query="x", days=2))["days"]
     ids = [i["place_id"] for d in days for i in d["items"]]
     assert len(ids) == len(set(ids)) and ids.count(900) <= 1
+
+
+# --- 비 오는 날 야외 제한, 식사 시간대 (프롬프트 10·11) ---
+from services.planner import is_outdoor, slots_ok  # noqa: E402
+
+
+def _haeundae_mix():
+    """'이번 토요일 해운대'처럼 해변·공원(야외)이 유사도 상위를 차지하는 후보 + 실내 명소·식당."""
+    out = [{"place_id": 10 + i, "name": n, "category": c, "gu": "해운대구", "lat": 35.158 + i * 0.002, "lng": 129.16,
+            "indoor": False if c == "해변" else None, "sim": 0.95 - i * 0.01, "description": ""}
+           for i, (n, c) in enumerate([("해운대", "해변"), ("동백섬", "해변"), ("APEC나루공원", "공원·자연"),
+                                       ("달맞이 산책로", "관광지"), ("청사포 전망대", "관광지"), ("송정해수욕장", "해변")])]
+    inside = [{"place_id": 40 + i, "name": f"전시관{i}", "category": "문화시설", "gu": "해운대구",
+               "lat": 35.16 + i * 0.002, "lng": 129.162, "indoor": True, "sim": 0.6, "description": ""} for i in range(4)]
+    food = [{"place_id": 60 + i, "name": f"식당{i}", "category": "음식점", "gu": "해운대구", "lat": 35.161,
+             "lng": 129.158 + i * 0.002, "indoor": True, "sim": 0.7, "description": ""} for i in range(3)]
+    return out + inside + food
+
+
+def test_rainy_day_outdoor_at_most_two():
+    """강수 60% 시나리오: 야외 장소(해변·공원·산책로·전망대)는 2곳 이하 (실내 후보가 있으면)."""
+    items = build_course(_haeundae_mix(), Conditions(query="해운대", gu=["해운대구"]), [60])["days"][0]["items"]
+    assert len(items) >= 4 and sum(map(is_outdoor, items)) <= 2
+    dry = build_course(_haeundae_mix(), Conditions(query="해운대", gu=["해운대구"]), [10])["days"][0]["items"]
+    assert sum(map(is_outdoor, dry)) > 2  # 맑은 날은 제한하지 않는다
+
+
+def test_is_outdoor_rules():
+    base = {"category": "관광지", "indoor": None, "name": "x", "description": ""}
+    assert is_outdoor({**base, "name": "달맞이 산책로"}) and is_outdoor({**base, "description": "부산 야경 명소"})
+    assert is_outdoor({**base, "category": "해변"}) and not is_outdoor({**base, "category": "해변", "indoor": True})
+    assert not is_outdoor(base)
+
+
+def test_food_only_in_meal_slots_never_first():
+    """식당은 11:30~13:30·17:30~19:30에 도착할 때만, 10:00 첫 장소는 식당이 아니다 (식당이 유사도 1위여도)."""
+    cands = [{**f, "sim": 0.99} for f in _haeundae_mix() if f["category"] == "음식점"] + \
+        [p for p in _haeundae_mix() if p["category"] != "음식점"]
+    items = build_course(cands, Conditions(query="x", gu=["해운대구"]))["days"][0]["items"]
+    assert items[0]["category"] != "음식점" and slots_ok(items, "auto") and meals_ok(items)
+    times = {i["place_id"]: a for i, (a, _) in zip(items, arrivals(items))}
+    assert all(11 * 60 + 30 <= times[i["place_id"]] <= 13 * 60 + 30 or 17 * 60 + 30 <= times[i["place_id"]] <= 19 * 60 + 30
+               for i in items if i["category"] == "음식점")
+
+
+def test_multi_day_food_heavy_candidates_keep_each_day_full():
+    """식당이 대부분인 후보로 2박 3일: 어느 날도 식당만으로 차서 1~2곳이 되지 않는다(먹는 곳 아닌 장소를 나눠 갖는다)."""
+    food = [{"place_id": i, "name": f"식당{i}", "category": "음식점", "gu": "해운대구", "lat": 35.16 + (i % 6) * 0.004,
+             "lng": 129.16 + (i // 6) * 0.004, "indoor": True, "sim": 0.95 - i * 0.005} for i in range(36)]
+    sights = [{"place_id": 100 + i, "name": f"명소{i}", "category": CATS[i % 4 if i % 4 != 2 else 0], "gu": "해운대구",
+               "lat": 35.20 + (i % 3) * 0.004, "lng": 129.20 + (i // 3) * 0.004, "indoor": False, "sim": 0.5} for i in range(12)]
+    days = build_course(food + sights, Conditions(query="x", days=3))["days"]
+    assert len(days) == 3 and all(len(d["items"]) >= 4 for d in days)
+    assert all(meals_ok(d["items"]) for d in days)

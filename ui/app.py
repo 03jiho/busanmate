@@ -75,6 +75,8 @@ h1 {{font-size: 1.6rem !important; font-weight: 700 !important; letter-spacing: 
 .trust.ok {{color: #1d5fa7; border-color: #b9cfe8; background: #f2f7fc;}}
 .trust.warn {{color: #8a5a00; border-color: #ead9b0; background: #fdf8ec;}}
 .est {{border-bottom: 1px dotted #8a857c; cursor: help;}}
+.umb {{display: inline-block; font-size: .75rem; color: #1d5fa7; background: #f2f7fc;
+  border: 1px solid #b9cfe8; border-radius: 999px; padding: .05rem .55rem; margin: .1rem 0 .2rem;}}
 .footer {{color: #8a857c; font-size: .75rem; line-height: 1.6; border-top: 1px solid #e3e0d8;
   padding-top: .8rem; margin-top: 2rem;}}
 </style>"""
@@ -200,7 +202,7 @@ def link_md(s: dict | None) -> str:
 
 
 def place_card(key: str, title: str, sub: str, reason: str | None, source: dict | None,
-               why: list[str] | None = None, edit: tuple | None = None) -> None:
+               why: list[str] | None = None, edit: tuple | None = None, umbrella: bool = False) -> None:
     """장소 카드: 이름, 시각·분류, 추천 이유, 왜 이곳?(요청 조건과 맞은 항목), 썸네일, 출처·원본 링크·이용 조건 (FR-003).
     edit=(r, day, index)이면 빼기·다른 곳으로 교체 버튼을 붙인다(채팅을 거치지 않는 직접 편집)."""
     with st.container(border=True, key=key):
@@ -212,6 +214,8 @@ def place_card(key: str, title: str, sub: str, reason: str | None, source: dict 
         body.markdown(f"**{title}**  \n:gray[{sub}]")
         if reason:
             body.write(reason)
+        if umbrella:  # 비 오는 날 불가피하게 넣은 야외 장소
+            st.markdown("<span class='umb'>비 올 때는 우산 필요</span>", unsafe_allow_html=True)
         if why:
             st.caption(f"왜 이곳? {' · '.join(why)}")
         if source:
@@ -368,7 +372,7 @@ def show_result(r: dict, key: str, latest: bool = False, stream: bool = False, r
     trust_badges(r)
     if latest and (err := ss.pop("edit_error", None)):
         st.error(err)
-    for n in r.get("notices") or []:  # 안내(날씨 미반영, 추정치, 조건 완화 등)는 맨 위에
+    for n in [x for x in r.get("notices") or [] if "찾지 못해" not in x]:  # 없는 장소 안내는 배지에서 한 번만
         st.info(n)
     if stream:  # 새 답변은 문장이 흘러나오듯 (verify_places를 거친 뒤의 문장이다)
         st.write_stream(_chunks(r["answer"]))
@@ -405,10 +409,12 @@ def show_result(r: dict, key: str, latest: bool = False, stream: bool = False, r
                         place_card(k, f"{i['order']}. {i['name']}",
                                    f"{arrive}–{leave} · 체류 {hm(i.get('stay_min') or 60)} · {i['category']}{price}",
                                    i.get("reason"), by_place.get(i["place_id"]), i.get("why"),
-                                   (r, d["day"], n) if editable else None)
+                                   (r, d["day"], n) if editable else None, bool(i.get("umbrella")))
                         if leg := i.get("leg_to_next"):  # 지도 선과 같은 모양: 도보 점선, 택시 실선
                             tip = html.escape(basis, quote=True)
                             text = html.escape(leg_text(leg)).replace("(예상)", f"<span class='est' title='{tip}'>(예상)</span>")
+                            if leg.get("taxi_hint_min"):  # 걸어서 15분이 넘는 구간
+                                text += f" · 택시를 타면 약 {leg['taxi_hint_min']}분"
                             st.markdown(f"<div class='leg {leg['mode']}'>{text}</div>", unsafe_allow_html=True)
                 if editable and len(d["items"]) > 1:  # 드래그로 순서 바꾸기 → 이동 시간·시각 바로 다시 계산
                     with st.expander("드래그해서 순서 바꾸기"):

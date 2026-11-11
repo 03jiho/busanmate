@@ -6,7 +6,7 @@ import re
 
 from agent import prompt
 from agent.explain import enrich
-from services.llm import get_llm
+from services.llm import STATS, error_cause, get_llm
 from services.search import fetch_places, source_of
 
 log = logging.getLogger("agent")
@@ -72,9 +72,23 @@ def _says_something(text: str | None, p: dict) -> bool:
     return len(norm) >= 8 and norm != re.sub(r"\W", "", p["name"])
 
 
+def clip(text: str | None, limit: int = 110) -> str | None:
+    """긴 설명은 문장 단위로 자른다. 잘랐을 때만 '…'를 붙이고, 첫 문장부터 길면 마지막 띄어쓰기에서 자른다."""
+    if not text or len(text) <= limit:
+        return text
+    out = ""
+    for sent in re.split(r"(?<=[.!?。])\s+", text.strip()):
+        if len(out) + len(sent) + 1 > limit:
+            break
+        out = f"{out} {sent}".strip()
+    if not out:
+        out = text[:limit].rsplit(" ", 1)[0]
+    return out.rstrip(" ,·") + "…"
+
+
 def intro_line(p: dict) -> str | None:
     """LLM이 실패했을 때의 추천 이유: DB 소개 문구 중 장소명이 아닌 첫 줄(원천 설명의 첫 줄은 제목인 경우가 많다)."""
-    return next((line.strip()[:80] for line in (p.get("description") or "").split("\n")
+    return next((clip(line.strip(), 80) for line in (p.get("description") or "").split("\n")
                  if _says_something(line, p)), None)
 
 
@@ -134,7 +148,9 @@ def build_response(state: dict) -> dict:
         "festivals": [f["name"] for f in state.get("festivals") or []],
     }
     try:
-        out = get_llm().json(prompt("response"), json.dumps(context, ensure_ascii=False, default=str), SCHEMA)
+        STATS["response_calls"] += 1
+        out = get_llm().json(prompt("response"), json.dumps(context, ensure_ascii=False, default=str), SCHEMA,
+                             deadline=state.get("deadline"))
         answer, dropped = verify_places(out["answer"], allowed)
         reasons = {}
         for r in out.get("reasons", []):
@@ -146,13 +162,17 @@ def build_response(state: dict) -> dict:
     except Exception as e:
         # 원인을 남긴다(예외 종류 + 메시지 앞부분, 키·토큰처럼 보이는 값은 가림). 질의 원문은 남기지 않는다 (SDD §8)
         reason = re.sub(r"(?i)(key|token|authorization|serviceKey)\s*[=:]\s*\S+", r"\1=***", str(e))[:160]
-        log.warning("response LLM 실패: %s %s", type(e).__name__, reason)
+        cause = error_cause(e)  # timeout · 429 · 5xx · parse · cooldown · budget · other
+        STATS["response_fallback"] += 1
+        STATS[f"response_fail_{cause}"] += 1
+        log.warning("response LLM 실패 cause=%s %s %s", cause, type(e).__name__, reason)
         answer = rule_summary(course, [places[i]["name"] for i in ids], state.get("dates"))
         # 추천 이유는 DB 설명의 첫 줄(공공데이터 장소 소개 문구)로 대신한다. 근거는 여전히 DB뿐이다 (AI-REQ-01·02)
         reasons = {i: intro_line(places[i]) for i in ids}
         notices.append("AI 설명을 만들지 못해 추천 이유를 장소 소개 문구로 대신합니다.")
     # 추천 이유가 빈 카드(LLM이 빠뜨렸거나 소개 문구가 없음)는 분류와 주소로 만든 한 줄로 채운다 (DB 정보만 씀)
-    reasons = {i: reasons.get(i) if _says_something(reasons.get(i), places[i]) else fallback_line(places[i]) for i in ids}
+    reasons = {i: clip(reasons.get(i)) if _says_something(reasons.get(i), places[i]) else fallback_line(places[i])
+               for i in ids}
 
     if course:
         for d in course["days"]:

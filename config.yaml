@@ -5,8 +5,12 @@ llm:                                # 제공자는 .env의 LLM_PROVIDER (기본 
   # 앞에서부터 시도, 503(수요 과다)·429(한도)면 다음 모델로 (2026-11-04 확인: 2.5-flash는 신규 사용자 불가)
   models: [gemini-3.5-flash-lite, gemini-3.5-flash, gemini-3.8-flash]
   temperature: 0.2
-  timeout_s: 10                     # 모델 하나의 최대 대기 (Gemini 최소 허용 기한이 10초라 더 줄일 수 없음)
-  total_timeout_s: 12               # 폴백 모델까지 합친 한 번의 호출 최대 대기 (전부 실패해도 이 안에 규칙 기반으로)
+  timeout_s: 15                     # 모델 하나의 최대 대기 (Gemini는 10초보다 짧은 기한을 400으로 거부)
+  min_timeout_s: 10                 # 남은 예산이 이보다 짧으면 호출하지 않고 바로 규칙 기반으로 (Gemini 최소 기한)
+  total_timeout_s: 15               # 폴백 모델·429 재시도까지 합친 한 번의 호출 최대 대기
+  request_budget_s: 20              # 질문 하나의 전체 응답 시간 상한(검색·날씨·길찾기 포함). LLM은 이 안에서만 부른다
+  reserve_s: 3                      # 마감 전에 남겨 둘 시간(LLM 뒤의 응답 조립·전송). 남은 시간 - reserve_s < min_timeout_s면 LLM을 건너뜀
+  retry_429_backoff_s: 1            # 429(한도)면 이만큼 기다렸다가 같은 모델로 한 번 더 (지수 백오프의 첫 단계)
   cooldown_s: 60                    # 모든 모델이 실패하면 이 시간 동안 LLM을 건너뛰고 규칙 기반으로 처리
   cache_ttl_s: 86400                # 조건 추출 응답 캐시 (이동시간은 캐시 대상 아님, ADR-008)
   prompt_version: v1                # agent/prompts/<이름>_<버전>.md
@@ -92,6 +96,8 @@ course:                             # COMP-06, FR-006, FR-014
   max_days: 3
   default_stay_min: 60              # 초안: 장소당 평균 체류
   day_start: "10:00"                # 초안: 하루 출발 시각 (화면의 방문 예정 시각 계산 기준)
+  dinner_window: ["17:30", "19:30"]  # 초안: 식당은 점심·저녁 시간대에 도착할 때만 둔다(첫 장소 10:00에 식당 금지)
+  walk_taxi_hint_min: 15            # 도보 구간이 이보다 길면 화면에 '택시를 타면 약 N분'을 함께 보여 준다
   lunch_window: ["11:30", "13:30"]  # 초안: 점심 시간대. 체류 합이 lunch_min_stay_min 이상이면 이 사이에 도착하는 식당 1곳을 보장
   lunch_min_stay_min: 300           # 초안: 하루 체류 합이 5시간 이상이면 점심 식당을 넣는다
   cafe_per_day: 1                   # 초안: 하루 카페 상한. 식당·카페는 연달아 두지 않는다(먹는 곳은 하루 장소의 절반 이하)
@@ -109,7 +115,21 @@ budget:                             # 예상 비용 (services/budget.py). 식비
 named_place:                        # 사용자가 이름으로 말한 장소를 DB와 대조 (services/search.match_names)
   match_threshold: 0.8              # 초안: 정규화한 이름의 유사도가 이 이상이면 같은 장소
   similar_n: 2                      # 못 찾았을 때 안내할 비슷한 장소 수
-  similar_min: 0.35                 # 초안: 이보다 덜 비슷하면 "비슷한 장소"로 안내하지 않는다
+  similar_min: 0.45                 # 초안: 이름 유사도(+분류 일치)가 이보다 낮으면 "비슷한 장소"로 안내하지 않는다
+  context_categories:               # 요청 이름의 말 → 그 장소가 속할 법한 분류 (비슷한 장소 점수에 더함)
+    전망대: [공원·자연, 관광지]
+    타워: [관광지, 공원·자연]
+    스카이: [관광지, 공원·자연]
+    해수욕장: [해변]
+    해변: [해변]
+    시장: [시장]
+    박물관: [문화시설]
+    미술관: [문화시설]
+    공원: [공원·자연]
+    식당: [음식점]
+    횟집: [음식점]
+    카페: [카페]
+    커피: [카페]
   generic_suffixes: [해수욕장, 해변, 유원지, 공원, 시장, 마을, 거리, 전망대, 산, 섬]  # DB 이름 + 이 말이면 같은 장소
 
 preferences:                        # FR-005 선호 테마 → 가산점을 줄 분류 (pref 항)
@@ -127,6 +147,11 @@ preferences:                        # FR-005 선호 테마 → 가산점을 줄 
 
 weather:                            # COMP-07, FR-004
   rain_prob_threshold: 60
+  rain_outdoor_max: 2               # 초안: 강수확률이 임계 이상인 날의 야외 장소 상한(실내 후보가 모자랄 때만 넘김)
+  rain_outdoor_penalty: 0.3         # 초안: 그날 야외 장소 점수에서 더 뺀다(날씨 항 0과 별도)
+  outdoor_categories: [해변, 공원·자연]
+  outdoor_name_keywords: [산책로, 전망대, 둘레길, 갈맷길, 해수욕장, 해변, 해안, 공원, 스카이워크, 등대, 계곡]
+  outdoor_desc_keywords: [야경]      # 설명에 이 말이 있으면 야외(야경 명소)로 본다
   cache_ttl_s: 3600
   source_label: 기상청 단기예보 (공공데이터포털)
   portal_url: https://www.data.go.kr/data/15084084/openapi.do

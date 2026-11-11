@@ -4,7 +4,7 @@ import logging
 import re
 from dataclasses import replace
 
-from services.planner import arrivals, build_course, day_minutes, detour_km, items_for, lunch_slot, meals_ok, removal_saving
+from services.planner import arrivals, build_course, day_minutes, detour_km, eating, items_for, lunch_slot, meals_ok, rainy, removal_saving
 from services.search import fetch_places, places_where, search, theme_points
 from settings import config
 from tools.base import BaseTool, ToolResult, register
@@ -54,7 +54,15 @@ class BuildCourse(BaseTool):
         except Exception as e:
             log.warning("theme_points 실패: %s", type(e).__name__)
             near = []
-        course = build_course(ctx["candidates"], ctx["conditions"], ctx.get("rain_by_day"), near)
+        cands = ctx["candidates"]
+        if any(rainy(r) for r in ctx.get("rain_by_day") or []):
+            # 비 오는 날: 검색은 날씨를 알기 전에 끝나 실내 명소가 거의 없을 수 있다 → 같은 구의 실내 명소(먹는 곳 제외)를
+            # 유사도 최저값으로 보태 둔다(야외 상한을 지킬 때 바꿔 넣을 후보, 점수로 앞서지는 않게)
+            ids, low = {p["place_id"] for p in cands}, min((p["sim"] for p in cands), default=0)
+            gu = set(ctx["conditions"].gu)
+            cands = cands + [{**p, "sim": low} for p in places_where(indoor=True)
+                             if p["place_id"] not in ids and not eating(p) and (not gu or p["gu"] in gu)]
+        course = build_course(cands, ctx["conditions"], ctx.get("rain_by_day"), near)
         summary = [{"day": d["day"], "places": [i["name"] for i in d["items"]]} for d in course["days"]]
         return ToolResult(ok=bool(course["days"]), data={"days": summary}, notices=course["notices"],
                           updates={"course": course})
@@ -83,6 +91,11 @@ class EditCourse(BaseTool):
         op = {"cafe": "add", "indoor": "replace", "shorter": "remove"}.get(kind) or args.get("op") or "add"
         used = {i["place_id"] for d in days for i in d["items"]}
         day_no = args.get("day") or _pick_day(kind, days, mode)
+        if kind == "indoor" and not args.get("day"):  # 실외 장소가 있는 날 중 비 올 확률이 가장 높은 날
+            info = fetch_places(list(used))
+            outdoor_days = [d for d in days if any((info.get(i["place_id"]) or {}).get("indoor") is False for i in d["items"])]
+            if outdoor_days:
+                day_no = max(outdoor_days, key=lambda d: (d.get("rain_prob") or -1, -d["day"]))["day"]
         if not 1 <= day_no <= len(days):
             return ToolResult(ok=False, data={"error": f"{day_no}일차 코스가 없습니다."})
         day = days[day_no - 1]

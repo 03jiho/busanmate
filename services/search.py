@@ -32,7 +32,7 @@ class Conditions:
 
 def all_place_names() -> list[dict]:
     with db.connect() as conn, conn.cursor(row_factory=dict_row) as cur:
-        cur.execute("SELECT place_id, name, gu FROM place WHERE is_active")
+        cur.execute("SELECT place_id, name, gu, category FROM place WHERE is_active")
         return cur.fetchall()
 
 
@@ -69,12 +69,14 @@ def match_names(requested: list[str], rows: list[dict], gu: list[str] | None = N
         if ranked and score(ranked[0]) >= c["match_threshold"]:
             found[said] = ranked[0]
             continue
-        # 비슷한 장소: 지역 단어를 뗀 이름으로 비교한다("부산 아쿠아랜드"가 "부산족발"과 '부산'만으로 가까워지지 않게).
-        # 너무 다르면(similar_min 미만) 안내하지 않는다.
+        # 비슷한 장소: 지역 단어를 뗀 이름의 유사도에, 요청 이름이 뜻하는 분류(전망대·타워 → 관광지·공원)와 맞으면
+        # 점수를 더한다("블루오션 스카이타워"에 횟집이 아니라 전망대가 나오게). 점수가 similar_min 미만이면 안내하지 않는다.
         core = [v for v in variants if v != _norm(said)] or list(variants)
+        ctx = {cat for word, cats in c.get("context_categories", {}).items() if word in said for cat in cats}
 
         def sim(row):
-            return max(SequenceMatcher(None, v, _norm(row["name"])).ratio() for v in core)
+            ratio = max(SequenceMatcher(None, v, _norm(row["name"])).ratio() for v in core)
+            return 0.6 * ratio + 0.4 * (row.get("category") in ctx) if ctx else ratio
         close = sorted(rows, key=lambda r: (sim(r), r["gu"] in (gu or [])), reverse=True)
         missing[said] = [r["name"] for r in close[:c["similar_n"]] if sim(r) >= c["similar_min"]]
     return found, missing

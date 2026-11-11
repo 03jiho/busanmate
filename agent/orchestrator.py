@@ -15,7 +15,7 @@ import tools  # noqa: F401  (tools 패키지가 도구 모듈을 모두 등록�
 from agent import prompt, session
 from agent.query_parser import parse
 from agent.response import build_response
-from services.llm import ToolCall, get_llm
+from services.llm import ToolCall, error_cause, get_llm
 from services.search import Conditions
 from settings import config
 from tools.base import REGISTRY, ToolResult, declarations
@@ -51,6 +51,7 @@ class State(TypedDict, total=False):
     result: dict
     action: dict | None
     suggest: str | None
+    deadline: float
 
 
 def _max_calls() -> int:
@@ -74,7 +75,7 @@ def parse_node(state: State) -> dict:
                 "edit": {"op": EDIT_OPS[action["kind"]], "kind": action["kind"], "day": action.get("day")},
                 "clarify": None, "notices": [], "course": s["last_course"]}
     msg = f"{s['pending']} {state['message']}" if s["pending"] else state["message"]  # 되물은 뒤의 답이면 이어 붙인다
-    p = parse(msg, state["today"], s["preferences"], has_course=bool(s["last_course"]))
+    p = parse(msg, state["today"], s["preferences"], has_course=bool(s["last_course"]), deadline=state.get("deadline"))
     s["pending"] = msg if p["clarify"] else None
     cond, dates = p["conditions"], p["dates"]
     if p["intent"] == "edit" and s["last_conditions"]:  # 대화로 고칠 때도 직전 코스의 조건·날짜를 그대로 쓴다
@@ -94,9 +95,9 @@ def agent_node(state: State) -> dict:
         has_course="있음" if state.get("course") else "없음", max_calls=_max_calls())
     messages = state["messages"] or [{"role": "user", "text": state["message"]}]
     try:
-        reply = get_llm().chat(system, messages, declarations())
+        reply = get_llm().chat(system, messages, declarations(), deadline=state.get("deadline"))
     except Exception as e:
-        log.warning("agent LLM 실패: %s", type(e).__name__)
+        log.warning("agent LLM 실패 cause=%s %s", error_cause(e), type(e).__name__)
         plan = [n for n in DEFAULT_PLAN.get(state["intent"], []) if n not in state["tool_log"]]
         calls = [ToolCall(n, dict(state["edit"] or {}) if n == "edit_course" else {}) for n in plan]
         return {"pending": calls, "llm_down": True,
@@ -163,7 +164,9 @@ GRAPH = _graph()
 
 
 def _input(session_id: str, message: str, today: date | None, edit: dict | None) -> dict:
-    return {"session_id": session_id, "message": message, "today": today or datetime.now(KST).date(), "action": edit}
+    # 질문 하나의 LLM 시간 예산(request_budget_s): 해석·도구 선택·요약이 이 안에서 끝나고, 넘으면 규칙 기반으로
+    return {"session_id": session_id, "message": message, "today": today or datetime.now(KST).date(), "action": edit,
+            "deadline": time.monotonic() + config()["llm"]["request_budget_s"]}
 
 
 def _result(out: dict) -> dict:

@@ -15,6 +15,20 @@ def weather_term(p: dict, rain_prob: float | None) -> float:
     return 1.0 if p["indoor"] else 0.0
 
 
+def is_outdoor(p: dict) -> bool:
+    """야외 장소: 실내로 확인된 곳은 아니고, 해변·공원 분류이거나 이름(산책로·전망대 등)·설명(야경)에 야외 단서가 있다."""
+    w = config()["weather"]
+    if p.get("indoor"):
+        return False
+    return (p.get("indoor") is False or p["category"] in w["outdoor_categories"]
+            or any(k in p["name"] for k in w["outdoor_name_keywords"])
+            or any(k in (p.get("description") or "") for k in w["outdoor_desc_keywords"]))
+
+
+def rainy(rain_prob: float | None) -> bool:
+    return rain_prob is not None and rain_prob >= config()["weather"]["rain_prob_threshold"]
+
+
 def _centroid(ps):
     return sum(p["lat"] for p in ps) / len(ps), sum(p["lng"] for p in ps) / len(ps)
 
@@ -39,7 +53,8 @@ def score(cands: list[dict], theme: str | None = None, rain_prob: float | None =
     anchor = max(cands, key=lambda p: p["sim"])
     dist = [haversine_km(p["lat"], p["lng"], anchor["lat"], anchor["lng"]) for p in cands]
     dmax = max(dist) or 1.0
-    out = [{**p, "score": s["w_sim"] * p["sim"] + s["w_pref"] * pref(p)
+    rain_cut = config()["weather"]["rain_outdoor_penalty"] if rainy(rain_prob) else 0  # 비 오는 날 야외는 크게 깎는다
+    out = [{**p, "score": s["w_sim"] * p["sim"] + s["w_pref"] * pref(p) - rain_cut * is_outdoor(p)
             + s["w_weather"] * weather_term(p, rain_prob) - s["w_dist"] * d / dmax}
            for p, d in zip(cands, dist)]
     return sorted(out, key=lambda p: -p["score"])
@@ -67,7 +82,8 @@ def same_place(a: dict, b: dict) -> bool:
     return a["name"].replace(" ", "") == b["name"].replace(" ", "") or (a["lat"], a["lng"]) == (b["lat"], b["lng"])
 
 
-def select(scored: list[dict], k: int, food_cap: int | None = None, mixed: bool = True) -> list[dict]:
+def select(scored: list[dict], k: int, food_cap: int | None = None, mixed: bool = True,
+           outdoor_cap: int | None = None) -> list[dict]:
     """점수 순으로 고르되 같은 분류가 이미 뽑혔으면 그 수 × λ만큼 감점 (다양성 보정).
     food_cap: 음식점은 이 수까지만 (다른 분류 후보가 남아 있는 동안). None이면 상한 없음.
     mixed: 먹는 곳(식당·카페)은 장소 수의 절반 이하, 카페는 cafe_per_day 이하 → 연달아 두지 않는 순서가 있게."""
@@ -85,6 +101,9 @@ def select(scored: list[dict], k: int, food_cap: int | None = None, mixed: bool 
             drop |= {_food(), cafe}
         if drop and any(p["category"] not in drop for p in pool):  # 다른 후보가 남아 있는 동안만
             pool = [p for p in pool if p["category"] not in drop]
+        if outdoor_cap is not None and sum(map(is_outdoor, chosen)) >= outdoor_cap \
+                and any(not is_outdoor(p) for p in pool):  # 비 오는 날 야외 상한 (실내 후보가 남아 있는 동안)
+            pool = [p for p in pool if not is_outdoor(p)]
         best = max(pool, key=lambda p: p["score"] - lam * sum(q["category"] == p["category"] for q in chosen))
         chosen.append(best)
         pool = [p for p in pool if not same_place(p, best)]
@@ -120,6 +139,18 @@ def lunch_ok(seq, mode: str, start: str | None = None) -> bool:
     return False
 
 
+def slots_ok(seq, mode: str, start: str | None = None) -> bool:
+    """식당은 점심(lunch_window)·저녁(dinner_window) 시간대에 도착할 때만 둔다. 그래서 첫 장소(10:00)는 식당이 아니다."""
+    c = config()["course"]
+    windows = [tuple(map(_minutes, c[w])) for w in ("lunch_window", "dinner_window")]
+    t, stay = _minutes(start or c["day_start"]), c["default_stay_min"]
+    for a, b in zip(seq, list(seq[1:]) + [None]):
+        if a["category"] == _food() and not any(lo <= t <= hi for lo, hi in windows):
+            return False
+        t += (a.get("stay_min") or stay) + (estimate_leg(a, b, mode)["minutes"] if b else 0)
+    return True
+
+
 def needs_lunch(seq) -> bool:
     """하루 체류 합이 lunch_min_stay_min(5시간) 이상이면 점심 식당이 필요하다."""
     c = config()["course"]
@@ -127,7 +158,7 @@ def needs_lunch(seq) -> bool:
 
 
 def best_order(places: list[dict], check_variety: bool, meals: bool = False,
-               lunch: str | None = None) -> list[dict] | None:
+               lunch: str | None = None, slots: str | None = None) -> list[dict] | None:
     """모든 순열(K ≤ 6이므로 최대 720개) 중 총 이동거리가 가장 짧은 순서. 조건을 만족하는 순서가 없으면 None.
     meals: 식당·카페 연달아 금지. lunch: 이동수단(mode)을 주면 점심 시간대 식당 도착을 요구한다."""
     best = None
@@ -137,6 +168,8 @@ def best_order(places: list[dict], check_variety: bool, meals: bool = False,
         if meals and not meals_ok(perm):
             continue
         if lunch and not lunch_ok(perm, lunch):
+            continue
+        if slots and not slots_ok(perm, slots):
             continue
         d = path_km(perm)
         if best is None or d < best[0]:
@@ -151,7 +184,7 @@ def day_minutes(seq: list[dict], mode: str) -> int:
 
 def plan_day(scored: list[dict], k: int, hours: float, mode: str, check_variety: bool,
              food_cap: int | None = None, meals: bool = True,
-             lunch_pool: list[dict] | None = None) -> tuple[list[dict], list[str]]:
+             lunch_pool: list[dict] | None = None, outdoor_cap: int | None = None) -> tuple[list[dict], list[str]]:
     """K곳을 고르고 순서를 정한다. 가용 시간을 넘으면 최저 점수 장소를 빼고 다시 정한다."""
     c = config()["course"]
     min_k, notices = c["places_per_day_min"], []
@@ -180,7 +213,7 @@ def plan_day(scored: list[dict], k: int, hours: float, mode: str, check_variety:
     near += [p for p in must if p not in near]
     if len(near) >= min_k:
         scored, k = near, min(k, len(near))
-    seq = select(scored, k, food_cap, mixed=meals)
+    seq = select(scored, k, food_cap, mixed=meals, outdoor_cap=outdoor_cap)
     food = _food()
     if meals and needs_lunch(seq) and not any(p["category"] == food for p in seq):
         # 체류 5시간 이상인데 식당이 없다: 가까운 식당 중 점수가 높은 곳을 넣는다(먹는 곳이 아닌 최저점 장소와 바꿈)
@@ -196,14 +229,44 @@ def plan_day(scored: list[dict], k: int, hours: float, mode: str, check_variety:
             seq.append(foods[0])
         else:
             notices.append("점심 식당 후보가 없어 점심 시간을 비워 뒀습니다.")
-    lunch_failed = False
+    lunch_failed = slots_off = False
     while True:
+        if outdoor_cap is not None:  # 비 오는 날 야외 상한: 바꾸기 단계에서 다시 늘어난 야외도 실내로 바꾼다
+            outs = [p for p in seq if is_outdoor(p) and not p.get("must")]
+            alts = [p for p in group if p not in seq and not is_outdoor(p) and not eating(p)
+                    and not any(same_place(p, q) for q in seq)]
+            if len(outs) > outdoor_cap and alts:
+                seq.remove(min(outs, key=lambda p: p["score"]))
+                clat, clng = _centroid(seq)
+                seq.append(min(alts, key=lambda p: haversine_km(p["lat"], p["lng"], clat, clng)))
+                continue
+            if len(outs) > outdoor_cap and not any("우산" in n for n in notices):
+                notices.append(f"비 예보가 있지만 근처 실내 명소가 부족해 야외 장소가 {len(outs)}곳 들어갔어요(우산 표시).")
         want_lunch = meals and needs_lunch(seq) and any(p["category"] == food for p in seq)
-        ordered = best_order(seq, check_variety, meals, mode if want_lunch else None)
+        slot_mode = mode if meals and not slots_off else None  # 식당은 점심·저녁 시간대에만 (먹는 곳만 고른 요청은 예외)
+        ordered = best_order(seq, check_variety, meals, mode if want_lunch else None, slot_mode)
         lunch_failed = False
-        if ordered is None and want_lunch:  # 점심 시간에 맞는 순서가 없으면 연속 규칙만 지키고 알린다
-            ordered = best_order(seq, check_variety, meals)
+        if ordered is None and want_lunch:  # 점심 시간에 맞는 순서가 없으면 연속·시간대 규칙만 지키고 알린다
+            ordered = best_order(seq, check_variety, meals, None, slot_mode)
             lunch_failed = ordered is not None
+        if ordered is None and slot_mode and best_order(seq, check_variety, meals) is not None:
+            # 식당이 많아 어느 순서로도 점심·저녁 시간대에 맞출 수 없다: 점수가 가장 낮은 식당을 먹는 곳이 아닌 곳으로 바꾼다
+            foods = [p for p in seq if p["category"] == food and not p.get("must")]
+            if not foods:
+                meals = False
+                continue
+            victim = min(foods, key=lambda p: p["score"])
+            seq.remove(victim)
+            alts = [p for p in group if p not in seq and p is not victim and not eating(p)
+                    and not any(same_place(p, q) for q in seq)]
+            if alts:
+                clat, clng = _centroid(seq)
+                seq.append(min(alts, key=lambda p: haversine_km(p["lat"], p["lng"], clat, clng)))
+            elif len(seq) < min_k:  # 바꿀 곳이 없는데 하루 최소 장소 수 밑으로 줄면 식당을 되돌리고 시간대 규칙을 푼다
+                seq.append(victim)
+                slots_off = True
+                notices.append("근처에 식당 말고 다른 후보가 부족해 식사 시간대가 아닌 때에도 식당이 들어갔어요.")
+            continue
         if ordered is None:
             # 순서 규칙(같은 분류 3연속 금지 FR-006, 식당·카페 연달아 금지)을 지킬 수 없다: 넘치는 쪽의 최저점 장소를
             # 지금 동선에 가장 가까운 다른 장소로 바꾸고, 없으면 뺀다. 2곳 이하는 항상 조건을 만족한다.
@@ -389,6 +452,19 @@ def build_course(cands: list[dict], cond, rain_by_day: list[float | None] | None
                    if haversine_km(p["lat"], p["lng"], top["lat"], top["lng"]) <= c["day_radius_km"]]
             g += add
             extra = [p for p in extra if p not in add]
+        # 식당이 많은 검색 결과면 한 날 묶음이 식당만으로 찰 수 있다(그날 1~2곳이 되던 문제): 먹는 곳이 아닌 장소가
+        # 하루 필요 수(장소의 절반)보다 적은 날은, 여유가 있는 다른 날에서 가까운 순으로 옮겨 온다
+        need = k - (k + 1) // 2
+        for g in clusters:
+            while g and sum(not eating(p) for p in g) < need:
+                donors = [h for h in clusters if h is not g and sum(not eating(p) for p in h) > need]
+                if not donors:
+                    break
+                clat, clng = _centroid(g)
+                pick, donor = min(((p, h) for h in donors for p in h if not eating(p)),
+                                  key=lambda x: haversine_km(x[0]["lat"], x[0]["lng"], clat, clng))
+                donor.remove(pick)
+                g.append(pick)
         # 비 올 확률이 높은 날일수록 실내 비율이 높은 그룹을 배정 (FR-014)
         by_rain = sorted(range(days), key=lambda d: -(rain[d] if rain[d] is not None else -1))
         by_indoor = sorted(clusters, key=lambda g: -sum(bool(p["indoor"]) for p in g) / max(len(g), 1))
@@ -403,7 +479,8 @@ def build_course(cands: list[dict], cond, rain_by_day: list[float | None] | None
             continue
         others = {p["place_id"] for g in groups if g is not group for p in g} | used  # 점심 식당도 다른 날과 겹치지 않게
         seq, n = plan_day(sc(group, rain[d]), min(k, len(group)), hours, cond.mode, check_variety, food_cap, meals,
-                          lunch_pool=[p for p in sc(cands) if p["place_id"] not in others])
+                          lunch_pool=[p for p in sc(cands) if p["place_id"] not in others],
+                          outdoor_cap=config()["weather"]["rain_outdoor_max"] if rainy(rain[d]) else None)
         used |= {p["place_id"] for p in seq}
         notices += [f"{d + 1}일차: {m}" if days > 1 else m for m in n]
         if rain[d] is not None and rain[d] >= config()["weather"]["rain_prob_threshold"]:

@@ -5,7 +5,7 @@ from datetime import date, timedelta
 
 from agent import prompt
 from agent.response import with_josa
-from services.llm import get_llm
+from services.llm import error_cause, get_llm
 from services.search import Conditions, all_place_names, match_names
 from settings import config
 
@@ -50,11 +50,11 @@ def schema() -> dict:
     }}
 
 
-def _llm_parse(message: str, today: date) -> dict:
+def _llm_parse(message: str, today: date, deadline: float | None = None) -> dict:
     system = prompt("parser").format(today=today.isoformat(), weekday=WEEKDAYS[today.weekday()],
                                      gu_list=", ".join(BUSAN_GU), categories=", ".join(categories()),
                                      themes=", ".join(themes()))
-    return get_llm().json(system, message, schema())
+    return get_llm().json(system, message, schema(), deadline=deadline)
 
 
 # 부산이 아닌 지역(범위 밖). "대구탕", "대구뽈찜"처럼 음식 이름에 들어간 경우는 지역으로 보지 않는다
@@ -145,14 +145,15 @@ def resolve_places(names: list[str], cond: Conditions, scan_message: str | None 
     return out
 
 
-def parse(message: str, today: date, prefs: dict | None = None, has_course: bool = False) -> dict:
+def parse(message: str, today: date, prefs: dict | None = None, has_course: bool = False,
+          deadline: float | None = None) -> dict:
     """{"intent", "conditions": Conditions, "dates": [date], "clarify": 되물을 질문|None, "edit": dict|None, "notices"}.
     선호 설정은 질의에 없는 항목만 채운다(질의 우선, UC-006)."""
     prefs, notices = prefs or {}, []
     try:
-        raw, fallback = _llm_parse(message, today), False
+        raw, fallback = _llm_parse(message, today, deadline), False
     except Exception as e:
-        log.warning("parser LLM 실패: %s", type(e).__name__)
+        log.warning("parser LLM 실패 cause=%s %s", error_cause(e), type(e).__name__)
         raw, fallback = _rule_parse(message, has_course), True
         notices.append("AI가 질문을 해석하지 못해 간단한 규칙으로 조건을 읽었습니다.")
 

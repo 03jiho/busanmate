@@ -326,4 +326,7 @@ def health():
         checks["vector"] = db.collection("place_text").count() > 0
     except Exception:
         checks["vector"] = False
-    return {"status": "ok" if all(checks.values()) else "degraded", **checks}
+    from services.llm import STATS  # 요약(LLM) 대체 발생률과 실패 원인별 횟수 (프로세스 시작 이후)
+    calls = STATS["response_calls"]
+    llm = {**dict(STATS), "response_fallback_rate": round(STATS["response_fallback"] / calls, 3) if calls else None}
+    return {"status": "ok" if all(checks.values()) else "degraded", **checks, "llm": llm}

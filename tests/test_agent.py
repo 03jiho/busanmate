@@ -19,15 +19,16 @@ CANDS = [{"place_id": i, "source": "busan_attraction", "name": f"장소{i}", "ca
          for i, c in enumerate(["해변", "문화시설", "음식점", "공원·자연"] * 3)]
 # 이름으로 콕 집어 말한 장소 처리용: 검색 결과(CANDS)에 없는 실제 장소 1곳과 비슷한 이름 후보
 YONG = {**CANDS[3], "place_id": 100, "name": "용두산공원", "lat": 35.1007, "lng": 129.0324}
-NAMES = [{"place_id": 200 + i, "name": n, "gu": g} for i, (n, g) in enumerate(
-    [("해운대", "해운대구"), ("오션블루 가덕휴게소", "강서구"), ("대청스카이전망대", "중구"), ("해운대 블루라인파크", "해운대구")])]
+NAMES = [{"place_id": 200 + i, "name": n, "gu": g, "category": c} for i, (n, g, c) in enumerate(
+    [("해운대", "해운대구", "해변"), ("오션블루 가덕휴게소", "강서구", "관광지"), ("대청스카이전망대", "중구", "공원·자연"),
+     ("해운대 블루라인파크", "해운대구", "관광지"), ("스시 타카이", "해운대구", "음식점")])]
 
 
 class FakeLLM:
     def __init__(self, parsed, plan=None, fail=False):
         self.parsed, self.plan, self.fail, self.prompts = parsed, list(plan or []), fail, []
 
-    def json(self, system, prompt, schema):
+    def json(self, system, prompt, schema, deadline=None):
         if self.fail:
             raise RuntimeError("down")
         self.prompts.append(prompt)
@@ -36,7 +37,7 @@ class FakeLLM:
         return {"answer": "먼저 [[0]]에 갑니다. 이어서 [[999]]도 들릅니다. 마지막은 [[1]]입니다.",
                 "reasons": [{"place_id": 0, "reason": "바다가 보여요"}, {"place_id": 999, "reason": "가짜"}]}
 
-    def chat(self, system, messages, tools=None):
+    def chat(self, system, messages, tools=None, deadline=None):
         if self.fail:
             raise RuntimeError("down")
         calls = self.plan.pop(0) if self.plan else []
@@ -54,8 +55,10 @@ def fake(monkeypatch):
     monkeypatch.setattr(REGISTRY["get_festivals"], "run", lambda args, ctx: ToolResult(ok=True, updates={"festivals": []}))
     monkeypatch.setattr(response, "fetch_places", lambda ids: {c["place_id"]: c for c in CANDS + [YONG] + CAFES + INDOOR if c["place_id"] in ids})
     monkeypatch.setattr(places_tool, "fetch_places", lambda ids: {c["place_id"]: c for c in CANDS + [YONG] + CAFES + INDOOR if c["place_id"] in ids})
+    monkeypatch.setattr(places_tool, "places_where", lambda category=None, indoor=None: [])  # 실제 DB를 읽지 않게
     monkeypatch.setattr(query_parser, "all_place_names", lambda: [{"place_id": c["place_id"], "name": c["name"],
-                                                                   "gu": c["gu"]} for c in CANDS + [YONG] + NAMES])
+                                                                   "gu": c["gu"], "category": c["category"]}
+                                                                  for c in CANDS + [YONG] + NAMES])
 
     def use(llm):
         for m in (query_parser, response, orchestrator):
@@ -240,13 +243,14 @@ def test_llm_down_mixed_known_and_unknown_places(fake):
 # --- 코스 제자리 수정 ("코스 고치기" 버튼: edit.kind) ---
 CAFES = [{**CANDS[2], "place_id": 400 + i, "name": f"카페{i}", "category": "카페", "indoor": True,
           "lat": 35.105 + i * 0.01, "lng": 129.035} for i in range(3)]
-INDOOR = [{**CANDS[1], "place_id": 500, "name": "실내전시관", "lat": 35.111, "lng": 129.041}]
+INDOOR = [{**CANDS[1], "place_id": 500 + n, "name": f"실내전시관{n}", "lat": 35.111 + n * 0.003, "lng": 129.041}
+          for n in range(3)]
 
 
 @pytest.fixture
 def two_days(fake, monkeypatch):
     monkeypatch.setattr(places_tool, "places_where",
-                        lambda category=None, indoor=None: CAFES if category == "카페" else INDOOR + CAFES)
+                        lambda category=None, indoor=None: CAFES if category == "카페" else INDOOR[:2] + CAFES)
     sid = str(uuid.uuid4())
     fake(FakeLLM({"intent": "course", "query": "역사", "gu": ["중구"], "start_date": "2026-11-07", "days": 2},
                  plan=[[("search_places", {}), ("get_weather", {}), ("get_festivals", {}), ("build_course", {})],
@@ -280,14 +284,16 @@ def test_cafe_edit_keeps_two_days_and_places(two_days):
     assert any("카페" in n or "넣었어요" in n for n in r["notices"])
 
 
-def test_indoor_edit_replaces_one_outdoor_in_place(two_days):
+def test_indoor_edit_replaces_one_outdoor_in_place(two_days, monkeypatch):
     sid, first = two_days
+    monkeypatch.setattr(places_tool, "places_where", lambda category=None, indoor=None: INDOOR)  # 502는 코스에 없음
     r = orchestrator.handle_chat(sid, "실내로 바꾸기", today=TODAY, edit={"kind": "indoor"})
     before, after = _ids(first), _ids(r)
     diffs = [(d, k) for d in range(2) for k, (a, b) in enumerate(zip(before[d], after[d])) if a != b]
     assert len(diffs) == 1 and [len(x) for x in after] == [len(x) for x in before]  # 한 자리만, 같은 위치에서
     d, k = diffs[0]
-    assert after[d][k] == 500 and not next(c for c in CANDS if c["place_id"] == before[d][k])["indoor"]
+    assert after[d][k] in {500, 501, 502} and after[d][k] not in sum(before, [])  # 코스에 없던 실내 장소로
+    assert not next(c for c in CANDS + INDOOR if c["place_id"] == before[d][k])["indoor"]
 
 
 def test_shorter_edit_removes_one_and_keeps_order(two_days):
@@ -409,3 +415,54 @@ def test_alternatives_same_category_not_in_course(fake, monkeypatch):
     dup = {**next(c for c in CANDS if c["place_id"] in used - {cur["place_id"]}), "place_id": 999}  # 다른 코스 장소의 원천 중복
     monkeypatch.setattr(course_ops, "places_where", lambda category=None, indoor=None: [dup])
     assert all(a["place_id"] != 999 for a in course_ops.alternatives(sid, 1, 0))
+
+
+
+def test_similar_uses_context_category():
+    """비슷한 장소: '스카이타워'면 이름이 비슷한 횟집이 아니라 전망대·관광지가 나오고, 점수가 낮으면 안내하지 않는다."""
+    from services.search import match_names
+    rows = [{"place_id": c["place_id"], "name": c["name"], "gu": c["gu"], "category": c["category"]} for c in NAMES]
+    _, missing = match_names(["블루오션 스카이타워", "이기대"], rows, ["해운대구"], query_parser.REGION_WORDS)
+    assert "대청스카이전망대" in missing["블루오션 스카이타워"] and "스시 타카이" not in missing["블루오션 스카이타워"]
+    assert missing["이기대"] == []
+
+
+@pytest.mark.parametrize("text, out", [
+    ("짧은 설명", "짧은 설명"),
+    ("첫 문장이에요. 두 번째 문장은 꽤 길어서 한도를 넘깁니다. 세 번째.", "첫 문장이에요.…"),
+])
+def test_clip_by_sentence(text, out):
+    assert response.clip(text, 30) == out
+
+
+def test_umbrella_badge_and_taxi_hint():
+    """비 오는 날 불가피하게 넣은 야외 장소엔 우산 배지, 15분 넘는 도보 구간엔 택시 제안 시간."""
+    from agent.explain import enrich
+    from services.search import Conditions as C
+    beach = {"place_id": 1, "name": "해운대", "category": "해변", "gu": "해운대구", "lat": 35.158, "lng": 129.16,
+             "indoor": False, "license": "공공데이터", "description": ""}
+    museum = {**beach, "place_id": 2, "name": "전시관", "category": "문화시설", "indoor": True}
+    course = {"days": [{"day": 1, "rain_prob": 70, "start": "10:00", "items": [
+        {"place_id": 1, "category": "해변", "stay_min": 60, "leg_to_next": {"mode": "walk", "minutes": 25, "meters": 1700}},
+        {"place_id": 2, "category": "문화시설", "stay_min": 60, "leg_to_next": None}]}]}
+    enrich(course, {1: beach, 2: museum}, C(query="x"))
+    a, b = course["days"][0]["items"]
+    assert a["umbrella"] is True and b["umbrella"] is False
+    assert a["leg_to_next"]["taxi_hint_min"] == 4  # 1.7km ÷ 25km/h
+
+
+
+def test_rainy_day_adds_indoor_attractions_for_swap(fake, monkeypatch):
+    """비 오는 날: 검색 후보에 실내 명소가 없어도 같은 구의 실내 명소를 보태 야외 상한(2곳)을 지킨다."""
+    sid = str(uuid.uuid4())
+    outdoor = [{**c, "place_id": 700 + n, "name": f"해변{n}", "category": "해변", "indoor": False, "sim": 0.95 - n * 0.01}
+               for n, c in enumerate(CANDS[:8])]
+    museums = [{**CANDS[1], "place_id": 900 + n, "name": f"박물관{n}", "lat": 35.105 + n * 0.002, "indoor": True}
+               for n in range(4)]
+    monkeypatch.setattr(places_tool, "search", lambda cond, n=None: ([dict(c) for c in outdoor], []))
+    monkeypatch.setattr(places_tool, "places_where", lambda category=None, indoor=None: museums if indoor else [])
+    monkeypatch.setattr(response, "fetch_places", lambda ids: {c["place_id"]: c for c in outdoor + museums if c["place_id"] in ids})
+    fake(FakeLLM({"intent": "course", "query": "바다", "gu": ["중구"], "start_date": "2026-11-07"},
+                 plan=[[("search_places", {}), ("get_weather", {}), ("build_course", {})], [("get_route_times", {})]]))
+    items = chat(sid, "이번 토요일 중구 바다 코스")["course"]["days"][0]["items"]  # 가짜 예보: 강수 80%
+    assert sum(i["category"] == "해변" for i in items) <= 2 and any(i["place_id"] >= 900 for i in items)
