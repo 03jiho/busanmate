@@ -39,8 +39,8 @@ def with_josa(name: str, josa: str | None) -> str:
     if josa in ("으로", "로"):
         return name + ("로" if jong in (0, 8) else "으로")
     return name + _JOSA[josa][0 if jong else 1]
-CHITCHAT = ("저는 부산 장소 검색과 여행 코스 추천을 도와드려요. 숙박·교통 예약이나 결제는 도와드리지 못합니다. "
-            "예: \"이번 토요일 부모님과 걸어서 돌기 좋은 바다 코스\", \"해운대 근처 비 오는 날 갈 만한 곳\"")
+CHITCHAT = "BusanMate는 부산 장소 찾기와 여행 코스만 도와드려요. 숙박·교통 예약이나 결제는 할 수 없어요. 아래처럼 물어봐 주세요."
+OUTSIDE = "BusanMate는 부산 전용이에요. 부산에서 비슷한 곳을 찾아드릴까요?"
 SCHEMA = {"type": "object", "required": ["answer", "reasons"], "properties": {
     "answer": {"type": "string"},
     "reasons": {"type": "array", "items": {"type": "object", "required": ["place_id", "reason"], "properties": {
@@ -105,6 +105,8 @@ def build_response(state: dict) -> dict:
         return {"answer": state["clarify"], "course": None, "sources": [], "notices": notices}
     if intent == "chitchat":
         return {"answer": CHITCHAT, "course": None, "sources": [], "notices": notices}
+    if intent == "outside":  # 범위 밖(부산이 아닌 지역): 화면이 "부산에서 찾기"(suggest)와 예시 질문 버튼을 함께 보여 준다
+        return {"answer": OUTSIDE, "course": None, "sources": [], "notices": notices, "suggest": state.get("suggest")}
 
     course = state.get("course") if intent in ("course", "edit") else None
     if course and course["days"]:

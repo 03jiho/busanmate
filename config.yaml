@@ -30,18 +30,21 @@ sources:
     operation: getAttractionKr
     kind: place
     label: 부산광역시_부산명소정보 서비스 (공공데이터포털)
+    portal_url: https://www.data.go.kr/data/15063481/openapi.do   # 원본 링크가 없는 카드에 대신 보여 줄 서비스 페이지
     license: 공공데이터포털 부산광역시 제공, 이용허락범위 제한 없음
   busan_food:
     url_env: BUSAN_FOOD_URL
     operation: getFoodKr
     kind: place
     label: 부산광역시_부산맛집정보 서비스 (공공데이터포털)
+    portal_url: https://www.data.go.kr/data/15063472/openapi.do   # 원본 링크가 없는 카드에 대신 보여 줄 서비스 페이지
     license: 공공데이터포털 부산광역시 제공, 이용허락범위 제한 없음
   busan_festival:
     url_env: BUSAN_FESTIVAL_URL
     operation: getFestivalKr
     kind: festival
     label: 부산광역시_부산축제정보 서비스 (공공데이터포털)
+    portal_url: https://www.data.go.kr/data/15063500/openapi.do   # 원본 링크가 없는 카드에 대신 보여 줄 서비스 페이지
     license: 공공데이터포털 부산광역시 제공, 이용허락범위 제한 없음
 
 ingest:
@@ -122,6 +125,7 @@ weather:                            # COMP-07, FR-004
   rain_prob_threshold: 60
   cache_ttl_s: 3600
   source_label: 기상청 단기예보 (공공데이터포털)
+  portal_url: https://www.data.go.kr/data/15084084/openapi.do
   license: 공공누리 제1유형 (출처 표시)
   operation: getVilageFcst          # KMA_FORECAST_URL 서비스 경로 뒤에 붙인다
   default_location: {lat: 35.1798, lng: 129.0750}  # 후보가 없을 때 쓸 위치(부산시청 → 격자 98, 76)

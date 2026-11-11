@@ -335,3 +335,28 @@ def test_reason_that_only_repeats_name_is_replaced():  # 소개 첫 줄이 제�
     assert response.intro_line(p) == "50년 전통의 밀면집으로 담백한 육수가 특징이다."  # 짧은 메뉴 줄도 건너뛴다
     assert response.intro_line({**p, "description": "동삼정"}) is None
     assert response.fallback_line(p) == "중구 광복로 1에 있는 음식점입니다."
+
+
+# --- 진행 단계 스트리밍, 범위 밖 질문 ---
+def test_stream_stages_in_order_and_same_result(fake):
+    """스트리밍 단계는 실제 진행 순서(조건 해석 → 장소 검색 → 날씨 → 동선 계산 → 요약)이고, 결과는 handle_chat과 같은 모양."""
+    plan = [[("search_places", {}), ("get_weather", {}), ("get_festivals", {}), ("build_course", {})], [("get_route_times", {})]]
+    fake(FakeLLM({"intent": "course", "query": "바다", "gu": ["중구"], "start_date": "2026-11-07"}, plan=plan))
+    evs = list(orchestrator.handle_chat_stream(str(uuid.uuid4()), "이번 토요일 중구 코스", today=TODAY))
+    stages = [e["stage"] for e in evs if "stage" in e]
+    order = list(dict.fromkeys(stages))
+    assert order == ["parse", "search", "weather", "route", "respond"]
+    assert all(a["t"] <= b["t"] for a, b in zip(evs, evs[1:]) if "t" in a and "t" in b)
+    res = evs[-1]["result"]
+    assert res["course"]["days"] and res["intent"] == "course" and set(res) >= {"answer", "conditions", "dates", "sources"}
+
+
+@pytest.mark.parametrize("msg, outside", [("서울 한강 산책 코스 추천해줘", True), ("제주도 맛집 알려줘", True),
+                                          ("해운대 대구탕 맛집", False), ("부산 서면 맛집", False)])
+def test_outside_busan(fake, msg, outside):
+    """부산이 아닌 지역은 범위 밖: 검색하지 않고 "부산 전용" 안내 + 지역만 '부산'으로 바꾼 제안. 대구탕은 지역이 아니다."""
+    fake(FakeLLM({"intent": "search", "query": "x"}))
+    r = chat(str(uuid.uuid4()), msg)
+    assert (r["intent"] == "outside") is outside
+    if outside:
+        assert r["answer"] == response.OUTSIDE and r["tool_calls"] == [] and "부산" in r["suggest"]

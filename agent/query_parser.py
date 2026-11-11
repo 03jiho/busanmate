@@ -31,7 +31,7 @@ def themes() -> list[str]:
 
 def schema() -> dict:
     return {"type": "object", "required": ["intent", "query"], "properties": {
-        "intent": {"type": "string", "enum": ["search", "course", "edit", "chitchat"]},
+        "intent": {"type": "string", "enum": ["search", "course", "edit", "chitchat", "outside"]},
         "gu": {"type": "array", "items": {"type": "string", "enum": BUSAN_GU}},
         "region_any": {"type": "boolean"},
         "categories": {"type": "array", "items": {"type": "string", "enum": categories()}},
@@ -57,6 +57,9 @@ def _llm_parse(message: str, today: date) -> dict:
     return get_llm().json(system, message, schema())
 
 
+# 부산이 아닌 지역(범위 밖). "대구탕", "대구뽈찜"처럼 음식 이름에 들어간 경우는 지역으로 보지 않는다
+OUTSIDE = re.compile(r"서울|제주|경주|대구(?![탕뽈찜전])|인천|대전|광주|울산|강릉|속초|전주|여수|통영|거제|양양|가평|"
+                     r"춘천|포항|안동|수원|도쿄|오사카|후쿠오카|교토|일본|중국|대만|홍콩|베트남|태국|싱가포르|미국|파리")
 RAINY = re.compile(r"비\s*(?:오는|올\s*때|올\s*것|예보)|우천|장마")
 NAMED_TRIGGER = re.compile(r"((?:\S+\s+){0,3}?\S+?)(?:은|는|을|를|도)?\s+(?:꼭\s*|반드시\s*)?(?:넣어|포함|추가|들러|가고\s*싶)")
 NAMED_FILLER = re.compile(r"이번|다음|주|오늘|내일|모레|\S*요일\S*|\S*코스\S*|\S*일정\S*|\S*여행\S*|\d+\S*")
@@ -189,5 +192,13 @@ def parse(message: str, today: date, prefs: dict | None = None, has_course: bool
     elif edit and edit.get("op") in ("replace", "remove") and not edit.get("index"):
         clarify = "몇 번째 장소를 바꿀지 알려 주세요. (예: 두 번째 장소 빼줘)"
 
+    suggest = None
+    if intent != "edit" and not cond.gu and not cond.must and "부산" not in message and             (intent == "outside" or OUTSIDE.search(message)):
+        # 범위 밖(부산이 아닌 지역): 지역 이름만 '부산'으로 바꾼 질문을 "부산에서 찾기" 제안으로 돌려준다
+        intent, clarify = "outside", None
+        suggest = re.sub(r"\s+", " ", OUTSIDE.sub("부산", message)).strip() if OUTSIDE.search(message) else None
+    elif intent == "outside":  # 부산 지역·장소를 말했는데 LLM이 범위 밖으로 본 경우
+        intent = "search"
     dates = [start + timedelta(days=i) for i in range(min(cond.days, config()["course"]["max_days"]))] if start else []
-    return {"intent": intent, "conditions": cond, "dates": dates, "clarify": clarify, "edit": edit, "notices": notices}
+    return {"intent": intent, "conditions": cond, "dates": dates, "clarify": clarify, "edit": edit, "notices": notices,
+            "suggest": suggest}

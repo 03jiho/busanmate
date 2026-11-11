@@ -24,7 +24,8 @@ class GetFestivals(BaseTool):
         label = config()["sources"]["busan_festival"]["label"]
         return ToolResult(ok=True, data={"festivals": [{"name": f["name"], "start": str(f["start_date"]),
                                                         "end": str(f["end_date"])} for f in rows]},
-                          sources=[{"label": f"{label} - {f['name']}", "url": f["url"], "license": f["license"]}
+                          sources=[{"label": f"{label} - {f['name']}", "url": f["url"], "license": f["license"],
+                                    "portal_url": config()["sources"]["busan_festival"].get("portal_url")}
                                    for f in rows],
                           updates={"festivals": rows})
 

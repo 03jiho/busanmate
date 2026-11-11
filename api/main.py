@@ -2,6 +2,7 @@
 요청 검증, 세션 식별, 관리자 토큰, 요청 한도, 오류 응답 표준화."""
 import hashlib
 import hmac
+import json
 import logging
 import re
 import threading
@@ -16,14 +17,14 @@ import requests
 from fastapi import FastAPI, File, Form, Header, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from google.genai import errors as genai_errors
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException
 
 import db
 from agent import session
-from agent.orchestrator import handle_chat
+from agent.orchestrator import handle_chat, handle_chat_stream
 from agent.query_parser import themes
 from pipeline import run as pipeline
 from services import image
@@ -140,6 +141,25 @@ def chat(body: ChatIn):
     if body.edit:
         return handle_chat(body.session_id, body.message.strip(), edit=body.edit.model_dump())
     return handle_chat(body.session_id, body.message.strip())
+
+
+@app.post("/api/chat/stream")
+def chat_stream(body: ChatIn):
+    """API-001 스트리밍(NDJSON): 진행 단계 {stage, phase, t}를 차례로 보내고 마지막 줄에 {result, t}(/api/chat과 같은 결과).
+    화면이 "조건 해석 → 장소 검색 → 날씨 → 동선 계산 → 요약"을 실제 진행대로 보여 주는 데 쓴다."""
+    _rate_limit(body.session_id)
+    log.info("chat stream session=%s", hashlib.sha256(body.session_id.encode()).hexdigest()[:10])
+    edit = body.edit.model_dump() if body.edit else None
+
+    def lines():
+        try:
+            for ev in handle_chat_stream(body.session_id, body.message.strip(), edit=edit):
+                yield json.dumps(ev, ensure_ascii=False, default=str) + "\n"
+        except Exception as e:  # 스트림 도중 오류: 상세는 서버 로그에만 (ERR-008)
+            log.exception("chat stream 실패: %s", type(e).__name__)
+            err = {"error": {"code": "INTERNAL", "message": "응답을 만드는 중 문제가 생겼습니다. 다시 시도해 주세요."}}
+            yield json.dumps(err, ensure_ascii=False) + "\n"
+    return StreamingResponse(lines(), media_type="application/x-ndjson")
 
 
 # --- API-002 (FR-008, FR-009, NFR-006): 사진은 메모리에서만 처리하고 저장·로그하지 않는다 ---

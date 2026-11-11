@@ -49,6 +49,7 @@ ADR 요약: 001 계층형 모놀리식 API · 002 RAG(속성 필터+벡터) + `[
 | ID | Method | Endpoint | Request → Response |
 |---|---|---|---|
 | API-001 | POST | `/api/chat` | `{session_id, message}` → `{answer, conditions, course, sources, notices}` |
+| API-001s | POST | `/api/chat/stream` | API-001과 같은 요청 → NDJSON: 단계 `{stage: parse|search|weather|route|respond, phase, t}` 줄들 + 마지막 `{result, t}` |
 | API-002 | POST | `/api/search/image` | multipart(session_id, file) → `{mode, matches, sources, notices}` |
 | API-003 | GET | `/api/session/{id}/preferences` | → `{theme, mode, companion}` |
 | API-004 | PUT | `/api/session/{id}/preferences` | `{theme, mode, companion}` → `{ok}` |
@@ -149,6 +150,7 @@ ADR 요약: 001 계층형 모놀리식 API · 002 RAG(속성 필터+벡터) + `[
 - **식사 배치:** 식당·카페는 연달아 두지 않는다. 먹는 곳은 하루 장소의 절반 이하, 카페는 `cafe_per_day`(1) 이하다. 하루 체류 합이 `lunch_min_stay_min`(5시간) 이상이면 `lunch_window`(11:30~13:30)에 도착하는 식당 1곳을 `best_order`가 보장한다. 식당이 안 뽑혔으면 넣고, 다일 일정에서 그날 묶음에 없으면 다른 날에 안 쓴 가까운 식당을 쓴다. 택시 실측(get_route_times) 뒤 점심이 시간대를 벗어나면 `fit_lunch`가 출발 시각을 5분 단위(±60분)로 옮긴다. 먹는 곳만 고른 요청(분류가 음식점·카페뿐)은 이 규칙을 적용하지 않는다. 해석기가 "맛집 투어"를 `categories=[음식점]`으로 읽어도 테마와 같으면 지운다('식당만'처럼 '만'이 있을 때만 분류 필터). 바꿀 후보가 없어 하루 최소보다 줄어들게 되면 규칙을 풀고 알린다.
 - **실내·비 오는 날:** "실내", "비 오는 날", "우천"은 indoor=true다. 검색은 실내 명소(`search.indoor_categories`, 문화시설)를 따로 찾아 앞에 두고, 그 구에 3곳 미만이면 다른 구까지 찾는다. 점수는 그 분류에 가산점을 준다. 실내 명소가 비식사 자리를 채우지 못하면 이유를 알린다. 분류를 지정하지 않은 검색에 식당이 적으면 점심용 식당 후보를 보탠다.
 - **카드 문구:** 추천 이유가 비거나 장소명만 되풀이하면(원천 설명 첫 줄이 제목) DB 소개 중 장소명이 아닌 첫 줄을, 그것도 없으면 "주소에 있는 분류입니다."를 쓴다. 원본 제목의 쉼표는 `split_title`로 처리한다. 세 어절 이상인 홍보 문구는 떼고, 나눈 이름이 모두 분류 규칙에 걸리면 장소 여럿(둘째부터 source_id `원본-2`)으로 저장한다. 같은 좌표의 장소는 한 코스에 한 번만 넣는다.
+- **화면 (2026-11-11):** 대기 중에는 `/api/chat/stream`의 실제 진행 단계(조건 해석 → 장소 검색 → 날씨 확인 → 동선 계산 → 요약)를 `st.status`로 보여 준다. 단계는 해석·응답 노드와 도구 호출(`get_stream_writer`)에서 나온다. 예상 시간 문구는 실측(코스 3.7~12.4초, 중앙값 5초)을 바탕으로 '보통 5~15초'로 했다. 새 답변은 `st.write_stream`으로 흘려 보여 주는데, verify_places를 거친 뒤의 문장이다. 지도는 folium이 아니라 카카오맵이다. Streamlit 탭은 보이지 않는 탭을 크기 0으로 그리므로, 지도 iframe 안에서 크기가 바뀌면(ResizeObserver, 처음 크기가 생길 때까지는 300ms 타이머로도 확인) `relayout()`(Leaflet의 invalidateSize에 해당) 뒤 `setBounds`로 다시 맞춘다. 폭 640px 이하에서는 지도 높이가 340px다. 부산이 아닌 지역(서울·제주·도쿄 등, '대구탕' 같은 음식명은 제외)은 intent `outside`다. 검색 없이 "BusanMate는 부산 전용이에요. 부산에서 비슷한 곳을 찾아드릴까요?"와 지역만 '부산'으로 바꾼 `suggest`를 돌려주고, 화면은 '부산에서 찾기'와 예시 질문 버튼을 함께 보여 준다. 원본 링크가 없는 카드는 공공데이터포털 서비스 페이지(config `sources.*.portal_url`, `weather.portal_url`)를 링크한다.
 - **ResponseBuilder:** 장소 정보는 DB에서 다시 읽고, LLM에는 `[[id]]` 마커만 쓰게 한다. `verify_places`가 후보 밖 id가 든 문장을 지우고, 남은 마커는 DB 이름으로 바꾼다. 출처는 장소별 제공처, 링크, 이용 조건에 기상청과 축제 출처를 더한다. 마커를 이름으로 바꿀 때 조사가 어색해질 수 있다(예: "해운대과").
 - **날씨:** 단기예보(`getVilageFcst`). 검색 후보들의 중심 좌표를 기상청 격자로 바꿔 조회한다(`latlon_to_grid`, 후보가 없으면 부산시청 98·76). 캐시 키는 발표 시각과 격자다. 9~21시 강수확률 최댓값을 그날 값으로 쓴다. 5일 뒤 날짜는 예보 범위 밖이라 반영하지 않는다(중기예보 엔드포인트 없음).
 - **카카오:** 택시 구간만 실측(시간·거리·요금)하고 저장·캐시하지 않는다. 결과 코드 102/103(출발지·도착지 주변 도로 없음, 산·계곡)은 추정치로 대체한다.

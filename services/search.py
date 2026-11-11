@@ -116,8 +116,9 @@ def theme_points(theme: str | None) -> list[tuple[float, float]]:
 
 
 def source_of(p: dict) -> dict:
-    return {"place_id": p["place_id"], "name": p["name"], "label": config()["sources"][p["source"]]["label"],
-            "url": p["url"], "license": p["license"], "image": p.get("image")}
+    src = config()["sources"][p["source"]]
+    return {"place_id": p["place_id"], "name": p["name"], "label": src["label"], "url": p["url"],
+            "portal_url": src.get("portal_url"), "license": p["license"], "image": p.get("image")}
 
 
 def _where(c: Conditions) -> dict | None:

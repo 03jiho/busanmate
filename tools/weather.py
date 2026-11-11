@@ -87,7 +87,7 @@ class GetWeather(BaseTool):
                    for d, r in zip(dates, rain) if r is None]
         w = config()["weather"]
         return ToolResult(ok=True, data={"rain_prob_by_day": rain}, notices=notices,
-                          sources=[{"label": w["source_label"], "url": None, "license": w["license"]}]
+                          sources=[{"label": w["source_label"], "url": None, "portal_url": w.get("portal_url"), "license": w["license"]}]
                           if any(r is not None for r in rain) else [],
                           updates={"rain_by_day": rain})
 

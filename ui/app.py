@@ -2,6 +2,8 @@
 import html
 import json
 import os
+import re
+import time
 import uuid
 from pathlib import Path
 
@@ -9,7 +11,7 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
-from export import ACCENT, WALK, course_pdf, day_label, hm, leg_text, schedule, share_text, source_url, summary_line
+from export import ACCENT, WALK, course_pdf, day_label, hm, leg_text, link_of, schedule, share_text, summary_line
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 API_URL = os.environ.get("API_URL", "http://localhost:8000")
@@ -24,6 +26,12 @@ EXAMPLES = ["이번 토요일 해운대에서 부모님과 걷기 좋은 바다 
 # 버튼 → 구조화된 수정 요청(API-001 edit.kind). 문장 해석 없이 직전 코스를 제자리에서 고친다 (FR-012, edit_course)
 EDITS = {"실내로 바꾸기": "indoor", "카페 추가": "cafe", "더 짧게": "shorter"}
 MAP_H = 480
+STAGES = {"parse": "조건 해석", "search": "장소 검색", "weather": "날씨 확인", "route": "동선 계산", "respond": "요약"}
+RUNNING = {"parse": "조건을 읽는 중", "search": "장소를 찾는 중", "weather": "날씨를 확인하는 중", "route": "동선을 계산하는 중",
+           "respond": "요약을 쓰는 중"}
+# 2026-11-11 실측(/api/chat/stream, 코스 질문 7개): 3.7~12.4초, 중앙값 5초. LLM이 정상일 때 12초 안팎,
+# 무료 등급 한도로 규칙 기반 대체가 되면 4~5초. 장소 검색만 하는 질문은 1초 안쪽.
+TYPICAL_WAIT = "5~15초"
 CSS = f"""<style>
 [data-testid="stMainBlockContainer"] {{padding-top: 2.5rem; max-width: 1180px;}}
 h1 {{font-size: 1.6rem !important; font-weight: 700 !important; letter-spacing: -0.02em; padding-bottom: 0 !important;}}
@@ -40,6 +48,10 @@ h1 {{font-size: 1.6rem !important; font-weight: 700 !important; letter-spacing: 
 .daysum {{font-size: .88rem; color: #3d3a35; margin: .2rem 0 .8rem;}}
 .bm-active {{outline: 2px solid {ACCENT}; outline-offset: 2px; background: #eef4fb;}}
 .intro {{max-width: 640px; color: #3d3a35; line-height: 1.7; margin: 1rem 0 1.2rem;}}
+@media (max-width: 640px) {{  /* 휴대폰: 지도는 낮게, 카드 썸네일은 작게 */
+  [data-testid="stMainBlockContainer"] iframe[title="st.iframe"] {{height: 340px !important;}}
+  [data-testid="stMainBlockContainer"] {{padding-left: 1rem; padding-right: 1rem;}}
+}}
 .footer {{color: #8a857c; font-size: .75rem; line-height: 1.6; border-top: 1px solid #e3e0d8;
   padding-top: .8rem; margin-top: 2rem;}}
 </style>"""
@@ -60,6 +72,26 @@ def api(method: str, path: str, **kw) -> dict:
     return body
 
 
+def _chunks(text: str):
+    for part in re.split(r"(\s+)", text):
+        yield part
+        time.sleep(0.012)
+
+
+def chat_stream(body: dict):
+    """/api/chat/stream(NDJSON)의 이벤트를 차례로 돌려준다. 실패하면 {"error"} 하나."""
+    try:
+        with requests.post(f"{API_URL}/api/chat/stream", json=body, stream=True, timeout=120) as r:
+            if r.status_code != 200:  # 400 되묻기·429 요청 한도는 JSON 오류 한 덩어리
+                yield r.json()
+                return
+            for line in r.iter_lines():
+                if line:
+                    yield json.loads(line)
+    except (requests.RequestException, ValueError):
+        yield {"error": {"message": "서버에 연결할 수 없어요. 잠시 후 다시 시도해 주세요."}}
+
+
 def ask(text: str, edit: str | None = None) -> None:
     """버튼 콜백: 다음 실행에서 이 문장을 질문으로 보낸다. edit가 있으면 코스 제자리 수정 요청으로 보낸다."""
     ss.queued, ss.queued_edit = text, edit
@@ -77,7 +109,8 @@ def kakao_map(items: list[dict], keys: list[str]) -> str:
                        "walk": bool(i["leg_to_next"]) and i["leg_to_next"]["mode"] == "walk"}
                       for i, k in zip(items, keys)], ensure_ascii=False)
     return f"""
-<div id="map" style="width:100%;height:{MAP_H - 10}px;border-radius:6px;color:#8a857c;font:13px sans-serif"></div>
+<style>html,body{{margin:0;height:100%}}</style>
+<div id="map" style="width:100%;height:calc(100% - 10px);border-radius:6px;color:#8a857c;font:13px sans-serif"></div>
 <script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={KAKAO_JS_KEY}&autoload=false"></script>
 <script>
 function focusCard(card) {{  // 카드는 부모 문서(Streamlit)에 있다: st.container(key=...) → .st-key-<key>
@@ -111,9 +144,20 @@ if (!window.kakao) {{  // 키 미설정·도메인 미등록이면 SDK가 401을
         strokeStyle: p.walk ? 'shortdash' : 'solid'}});
     }}
   }});
-  map.setBounds(bounds, 40, 40, 40, 40);
-  // iframe 크기가 늦게 정해지면(탭 전환 등) 범위가 어긋나므로 한 번 더 맞춘다
-  setTimeout(function () {{ map.relayout(); map.setBounds(bounds, 40, 40, 40, 40); }}, 400);
+  // Streamlit 탭은 보이지 않는 탭을 크기 0으로 그린다. 그 안에서 만든 지도는 크기를 잘못 잡으므로, 지도 칸의 크기가
+  // 바뀔 때(탭이 보일 때, 화면 폭이 바뀔 때)마다 relayout(Leaflet의 invalidateSize에 해당) 뒤 범위를 다시 맞춘다
+  function fit() {{ map.relayout(); map.setBounds(bounds, 40, 40, 40, 40); }}
+  window.bmMap = map; window.bmPts = pts;  // 화면 점검용(모든 장소가 지도 범위 안에 있는지)
+  var el = document.getElementById('map'), lastSize = '';
+  function refit() {{  // 폭·높이 중 하나라도 바뀌면(탭 표시, 휴대폰 회전, 모바일 높이) 다시 맞춘다
+    var size = el.offsetWidth + 'x' + el.offsetHeight;
+    if (el.offsetWidth > 0 && el.offsetHeight > 0 && size !== lastSize) {{ lastSize = size; fit(); }}
+    return el.offsetWidth > 0;
+  }}
+  refit();
+  new ResizeObserver(refit).observe(el);
+  // ResizeObserver 알림은 화면을 그릴 때만 오므로(백그라운드 탭 등) 처음 크기가 생길 때까지는 타이머로도 확인한다
+  var poll = setInterval(function () {{ if (refit()) clearInterval(poll); }}, 300);
 }});
 </script>"""
 
@@ -123,6 +167,13 @@ def show_map(items: list[dict], keys: list[str]) -> None:
         components.html(kakao_map(items, keys), height=MAP_H)
     else:
         st.map([{"lat": i["lat"], "lon": i["lng"]} for i in items])
+
+
+def link_md(s: dict | None) -> str:
+    """원본 링크가 있으면 그것을, 없으면 공공데이터포털 서비스 페이지를 링크한다 (FR-003)."""
+    if found := link_of(s):
+        return f"[{found[0]}]({found[1]})"
+    return "원본 링크 없음"
 
 
 def place_card(key: str, title: str, sub: str, reason: str | None, source: dict | None) -> None:
@@ -137,7 +188,7 @@ def place_card(key: str, title: str, sub: str, reason: str | None, source: dict 
         if reason:
             body.write(reason)
         if source:
-            link = f"[원본 링크]({url})" if (url := source_url(source)) else "원본 링크 없음"
+            link = link_md(source)
             photo = f" · 사진: {image['license']}" if image else ""
             st.caption(f"출처: {source['label']} · {link} · {source['license']}{photo}")
         else:
@@ -191,14 +242,23 @@ def show_photo_result(r: dict, key: str) -> None:
             st.button("코스에 넣기", key=f"add-{k}", on_click=ask, args=(f"{m['name']}을(를) 코스에 추가해줘",))
 
 
-def show_result(r: dict, key: str, latest: bool = False) -> None:
+def show_result(r: dict, key: str, latest: bool = False, stream: bool = False) -> None:
     if "error" in r:
         st.error(r["error"]["message"])
         return
     chips(r)
     for n in r.get("notices") or []:  # 안내(날씨 미반영, 추정치, 조건 완화 등)는 맨 위에
         st.info(n)
-    st.markdown(r["answer"])
+    if stream:  # 새 답변은 문장이 흘러나오듯 (verify_places를 거친 뒤의 문장이다)
+        st.write_stream(_chunks(r["answer"]))
+    else:
+        st.markdown(r["answer"])
+    if latest and r.get("intent") in ("outside", "chitchat"):  # 범위 밖: 부산에서 찾기 + 예시 질문
+        if r.get("suggest"):
+            st.button(f"부산에서 찾기: {r['suggest']}", key=f"sg-{key}", on_click=ask, args=(r["suggest"],), type="primary")
+        st.caption("이렇게 물어보세요")
+        for col, (n, ex) in zip(st.columns(len(EXAMPLES)), enumerate(EXAMPLES)):
+            col.button(ex, key=f"ex-{key}-{n}", on_click=ask, args=(ex,), use_container_width=True)
     by_place = {s["place_id"]: s for s in r.get("sources") or [] if "place_id" in s}
     course = r.get("course")
     if course and course.get("days"):
@@ -227,7 +287,7 @@ def show_result(r: dict, key: str, latest: bool = False) -> None:
                    by_place.get(p["place_id"]))
     others = [s for s in r.get("sources") or [] if "place_id" not in s]  # 기상청·축제 등
     for s in others:
-        link = f"[원본 링크]({url})" if (url := source_url(s)) else "원본 링크 없음"
+        link = link_md(s)
         st.caption(f"출처: {s['label']} · {link} · {s['license']}")
     if course and course.get("days"):
         export_tools(r, key)
@@ -322,10 +382,30 @@ if message:  # 질문은 바로 보이고, 답은 기다리는 동안 스피너
     with st.chat_message("user"):
         st.markdown(message)
     with st.chat_message("assistant"):
-        with st.spinner("코스를 고치는 중…" if edit_kind else "코스를 짜는 중… 보통 10~20초 걸립니다."):
-            body = {"session_id": ss.sid, "message": message} | ({"edit": {"kind": edit_kind}} if edit_kind else {})
-            result = api("POST", "/api/chat", json=body)
-        show_result(result, key=f"h{len(ss.history) + 1}", latest=True)
+        body = {"session_id": ss.sid, "message": message} | ({"edit": {"kind": edit_kind}} if edit_kind else {})
+        status = st.status("코스를 고치는 중…" if edit_kind else f"질문을 읽는 중… (보통 {TYPICAL_WAIT})", expanded=True)
+        result, total, current, started, last_t = None, None, None, {}, 0.0
+        for ev in chat_stream(body):  # 단계는 서버의 실제 진행(해석 → 도구 호출 → 요약)에서 온다
+            if "result" in ev or "error" in ev:
+                result, total = ev.get("result", ev), ev.get("t")
+                break
+            stage, t = ev["stage"], ev["t"]
+            if stage != current:
+                if current:
+                    status.write(f"{STAGES[current]} 완료 · {last_t - started[current]:.1f}초")
+                started[stage] = last_t if stage == "respond" else t  # 요약은 끝 이벤트만 온다
+                current = stage
+                status.update(label=f"{RUNNING[stage]}…")
+            if stage == "route" and ev["phase"] == "done":  # 동선 계산 다음은 요약(요약은 끝날 때만 이벤트가 온다)
+                status.update(label=f"{RUNNING['respond']}…")
+            last_t = t
+        if current:
+            status.write(f"{STAGES[current]} 완료 · {last_t - started[current]:.1f}초")
+        failed = "error" in (result or {"error": 1})
+        status.update(label="문제가 생겼어요" if failed else f"완료 · {total:.1f}초", state="error" if failed else "complete",
+                      expanded=False)
+        show_result(result or {"error": {"message": "응답을 받지 못했어요."}}, key=f"h{len(ss.history) + 1}",
+                    latest=True, stream=True)
     ss.history += [{"role": "user", "content": message}, {"role": "assistant", "result": result}]
 
 st.markdown("<div class='footer'>데이터: 공공데이터포털 부산광역시 부산명소·부산맛집·부산축제정보 서비스(이용허락범위 제한 없음) · "

@@ -39,3 +39,10 @@ def test_share_text_and_pdf(monkeypatch):
 @pytest.mark.parametrize("m,out", [(45, "45분"), (60, "1시간"), (245, "4시간 5분")])
 def test_hm(m, out):
     assert export.hm(m) == out
+
+
+def test_link_falls_back_to_portal():  # 원본 링크가 없는 카드는 공공데이터포털 서비스 페이지로
+    portal = "https://www.data.go.kr/data/15063481/openapi.do"
+    assert export.link_of({"url": "공식홈페이지: https://a.kr 인스타", "portal_url": portal}) == ("원본 링크", "https://a.kr")
+    assert export.link_of({"url": None, "portal_url": portal}) == ("공공데이터포털", portal)
+    assert export.link_of({"url": None}) is None

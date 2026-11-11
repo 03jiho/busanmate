@@ -83,3 +83,25 @@ def test_upstream_failures_map_to_502_504(monkeypatch, sid, exc, status, code):
 def test_unknown_path_uses_error_format():
     r = client.get("/api/nope")
     assert r.status_code == 404 and r.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_chat_stream_ndjson(sid, monkeypatch):
+    """API-001 스트리밍: 단계 이벤트를 줄마다 보내고 마지막 줄이 결과. 도중 오류는 표준 오류 한 줄(상세는 로그에만)."""
+    import json as _json
+
+    def fake_stream(s, m, edit=None):
+        yield {"stage": "parse", "phase": "start", "t": 0.0}
+        yield {"stage": "parse", "phase": "done", "t": 0.5}
+        yield {"result": {"answer": "ok", "intent": "search"}, "t": 0.6}
+    monkeypatch.setattr(main, "handle_chat_stream", fake_stream)
+    r = client.post("/api/chat/stream", json={"session_id": sid, "message": "해운대"})
+    lines = [_json.loads(x) for x in r.text.splitlines() if x]
+    assert r.headers["content-type"].startswith("application/x-ndjson")
+    assert [x.get("stage") for x in lines[:2]] == ["parse", "parse"] and lines[-1]["result"]["answer"] == "ok"
+
+    def boom(s, m, edit=None):
+        yield {"stage": "parse", "phase": "start", "t": 0.0}
+        raise RuntimeError("secret detail")
+    monkeypatch.setattr(main, "handle_chat_stream", boom)
+    lines = [_json.loads(x) for x in client.post("/api/chat/stream", json={"session_id": sid, "message": "a"}).text.splitlines()]
+    assert lines[-1]["error"]["code"] == "INTERNAL" and "secret" not in lines[-1]["error"]["message"]
