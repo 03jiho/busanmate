@@ -82,7 +82,7 @@ class BuildCourse(BaseTool):
             cands = cands + [{**p, "sim": low} for cat in config()["course"]["mix_categories"]
                              for p in places_where(category=cat)
                              if p["place_id"] not in ids and p["gu"] in gu and not (wet and is_outdoor(p))]
-        course = build_course(cands, ctx["conditions"], ctx.get("rain_by_day"), near)
+        course = build_course(cands, ctx["conditions"], ctx.get("rain_by_day"), near, ctx.get("rain_hours_by_day"))
         summary = [{"day": d["day"], "places": [i["name"] for i in d["items"]]} for d in course["days"]]
         return ToolResult(ok=bool(course["days"]), data={"days": summary}, notices=course["notices"],
                           updates={"course": course})

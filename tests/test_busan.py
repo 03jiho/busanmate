@@ -96,3 +96,19 @@ def test_to_places_splits_with_suffixed_ids():
     assert [(p["name"], p["category"], p["source_id"]) for p in out] == \
         [("송정해수욕장", "해변", "1"), ("죽도공원", "공원·자연", "1-2")]
     assert out[1]["image_url"] is None and out[0]["lat"] == out[1]["lat"]
+
+
+def test_cafe_name_with_meal_menu_is_restaurant():
+    """이름에 '브레드'가 있어도 대표 메뉴가 식사(스테이크)면 음식점 (본 앤 브레드 오분류)."""
+    row = {"MAIN_TITLE": "본 앤 브레드", "LAT": "35.16", "LNG": "129.16", "GUGUN_NM": "해운대구", "UC_SEQ": 1,
+           "RPRSNTV_MENU": "스테이크하우스"}
+    assert to_place(row, "busan_food")["category"] == "음식점"
+    assert to_place({**row, "MAIN_TITLE": "브레드 공방", "RPRSNTV_MENU": "케이크, 커피"}, "busan_food")["category"] == "카페"
+
+
+def test_category_check_flags_cafe_with_meal_description():
+    from eval.category_check import contradiction
+    steak = {"name": "본 앤 브레드", "category": "카페", "description": "본 앤 브레드\n대표 메뉴: 스테이크하우스\n최고급 한우를 숙성한다."}
+    assert "카페인데" in contradiction(steak)
+    assert contradiction({**steak, "category": "음식점"}) is None
+    assert contradiction({"name": "빵집", "category": "카페", "description": "빵집\n대표 메뉴: 커피, 케이크"}) is None

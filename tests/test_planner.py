@@ -350,3 +350,16 @@ def test_category_overflow_explained_when_no_alternatives():
                 "lng": 129.03, "indoor": True, "sim": 0.9 - i * 0.01} for i in range(6)]
     course = build_course(museums, Conditions(query="x"))
     assert any("다른 종류 후보가 부족" in n for n in course["notices"])
+
+
+def test_rainy_outdoor_goes_to_driest_hour():
+    """비 오는 날 시간별 예보: 오전에 비가 오고 오후에 그치면 야외 장소(해변)는 오후로 간다."""
+    from services.planner import arrivals
+    museums = [{"place_id": i, "name": f"실내{i}", "category": c, "gu": "중구", "lat": 35.100 + i * 0.002,
+                "lng": 129.030, "indoor": True, "sim": 0.8} for i, c in enumerate(["문화시설", "시장", "관광지", "문화시설", "시장"])]
+    beach = {"place_id": 9, "name": "송도해수욕장", "category": "해변", "gu": "중구", "lat": 35.101, "lng": 129.031,
+             "indoor": False, "sim": 0.9}
+    wet_morning = {h: (90 if h < 13 else 10) for h in range(24)}
+    day = build_course(museums + [beach], Conditions(query="x", mode="walk"), [80], rain_hours_by_day=[wet_morning])["days"][0]
+    times = dict(zip([i["place_id"] for i in day["items"]], [a for a, _ in arrivals(day["items"], day["start"])]))
+    assert times[9] >= 13 * 60  # 강수확률 낮은 오후

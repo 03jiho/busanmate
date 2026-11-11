@@ -64,7 +64,8 @@ def to_place(row: dict, source: str) -> dict | None:
     menu = row.get("RPRSNTV_MENU", "")
     if source == "busan_food":
         cafe = config()["classify"]["cafe"]
-        is_cafe = any(k in name.lower() for k in cafe["keywords"]) or any(k in menu for k in cafe["menu_keywords"])
+        is_cafe = (any(k in name.lower() for k in cafe["keywords"]) or any(k in menu for k in cafe["menu_keywords"])) \
+            and not any(k in menu for k in cafe["food_menu_keywords"])  # 대표 메뉴가 식사면 이름이 카페 같아도 음식점
         kind = cafe if is_cafe else config()["classify"]["food"]
         category, indoor = kind["category"], kind["indoor"]
     else:

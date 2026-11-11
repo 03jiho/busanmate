@@ -2,6 +2,7 @@
 import itertools
 import math
 from collections import Counter
+from functools import partial
 
 from services.route import estimate_leg, haversine_km, road_km
 from settings import config
@@ -153,6 +154,18 @@ def slots_ok(seq, mode: str, start: str | None = None) -> bool:
     return True
 
 
+def rain_cost(seq, mode: str, pop: dict[int, int], start: str | None = None) -> int:
+    """야외 장소에 머무는 시간대의 강수확률 합(시 단위 최댓값). 비 오는 날 순서를 정할 때 작을수록 좋다."""
+    c = config()["course"]
+    t, stay, total = _minutes(start or c["day_start"]), c["default_stay_min"], 0
+    for a, b in zip(seq, list(seq[1:]) + [None]):
+        s = a.get("stay_min") or stay
+        if is_outdoor(a):
+            total += max(pop.get(h, 0) for h in range(t // 60, (t + s) // 60 + 1))
+        t += s + (estimate_leg(a, b, mode)["minutes"] if b else 0)
+    return total
+
+
 def needs_lunch(seq) -> bool:
     """하루 체류 합이 lunch_min_stay_min(5시간) 이상이면 점심 식당이 필요하다."""
     c = config()["course"]
@@ -160,9 +173,11 @@ def needs_lunch(seq) -> bool:
 
 
 def best_order(places: list[dict], check_variety: bool, meals: bool = False,
-               lunch: str | None = None, slots: str | None = None) -> list[dict] | None:
+               lunch: str | None = None, slots: str | None = None,
+               rain: tuple[str, dict[int, int]] | None = None) -> list[dict] | None:
     """모든 순열(K ≤ 6이므로 최대 720개) 중 총 이동거리가 가장 짧은 순서. 조건을 만족하는 순서가 없으면 None.
-    meals: 식당·카페 연달아 금지. lunch: 이동수단(mode)을 주면 점심 시간대 식당 도착을 요구한다."""
+    meals: 식당·카페 연달아 금지. lunch: 이동수단(mode)을 주면 점심 시간대 식당 도착을 요구한다.
+    rain: (mode, {시: 강수확률})이면 야외 장소를 강수확률이 낮은 시간대에 두도록 그 시간대 강수확률을 거리로 더한다."""
     best = None
     for perm in itertools.permutations(places):
         if check_variety and not _variety_ok(perm):
@@ -174,6 +189,8 @@ def best_order(places: list[dict], check_variety: bool, meals: bool = False,
         if slots and not slots_ok(perm, slots):
             continue
         d = path_km(perm)
+        if rain:
+            d += config()["weather"]["rain_hour_weight_km"] * rain_cost(perm, rain[0], rain[1]) / 100
         if best is None or d < best[0]:
             best = (d, list(perm))
     return best[1] if best else None
@@ -186,8 +203,11 @@ def day_minutes(seq: list[dict], mode: str) -> int:
 
 def plan_day(scored: list[dict], k: int, hours: float, mode: str, check_variety: bool,
              food_cap: int | None = None, meals: bool = True,
-             lunch_pool: list[dict] | None = None, outdoor_cap: int | None = None) -> tuple[list[dict], list[str]]:
+             lunch_pool: list[dict] | None = None, outdoor_cap: int | None = None,
+             rain_hours: dict[int, int] | None = None) -> tuple[list[dict], list[str]]:
     """K곳을 고르고 순서를 정한다. 가용 시간을 넘으면 최저 점수 장소를 빼고 다시 정한다."""
+    # 비 오는 날 시간별 예보가 있으면 야외 장소를 강수확률이 낮은 시간대에 (순서 비용에 반영)
+    order = partial(best_order, rain=(mode, rain_hours) if rain_hours else None)
     c = config()["course"]
     min_k, notices = c["places_per_day_min"], []
     # 하루 동선이 흩어지지 않게 기준 장소 반경 안에서만 고른다.
@@ -246,12 +266,12 @@ def plan_day(scored: list[dict], k: int, hours: float, mode: str, check_variety:
                 notices.append(f"비 예보가 있지만 근처 실내 명소가 부족해 야외 장소가 {len(outs)}곳 들어갔어요(우산 표시).")
         want_lunch = meals and needs_lunch(seq) and any(p["category"] == food for p in seq)
         slot_mode = mode if meals and not slots_off else None  # 식당은 점심·저녁 시간대에만 (먹는 곳만 고른 요청은 예외)
-        ordered = best_order(seq, check_variety, meals, mode if want_lunch else None, slot_mode)
+        ordered = order(seq, check_variety, meals, mode if want_lunch else None, slot_mode)
         lunch_failed = False
         if ordered is None and want_lunch:  # 점심 시간에 맞는 순서가 없으면 연속·시간대 규칙만 지키고 알린다
-            ordered = best_order(seq, check_variety, meals, None, slot_mode)
+            ordered = order(seq, check_variety, meals, None, slot_mode)
             lunch_failed = ordered is not None
-        if ordered is None and slot_mode and best_order(seq, check_variety, meals) is not None:
+        if ordered is None and slot_mode and order(seq, check_variety, meals) is not None:
             # 식당이 많아 어느 순서로도 점심·저녁 시간대에 맞출 수 없다: 점수가 가장 낮은 식당을 먹는 곳이 아닌 곳으로 바꾼다
             foods = [p for p in seq if p["category"] == food and not p.get("must")]
             if not foods:
@@ -400,7 +420,8 @@ def items_for(seq: list[dict], mode: str) -> list[dict]:
 
 
 def build_course(cands: list[dict], cond, rain_by_day: list[float | None] | None = None,
-                 near_points: list[tuple[float, float]] | None = None) -> dict:
+                 near_points: list[tuple[float, float]] | None = None,
+                 rain_hours_by_day: list[dict | None] | None = None) -> dict:
     """후보 → 날짜별 코스. cond는 services.search.Conditions. rain_by_day[i]는 i일차 강수확률(없으면 None).
     near_points: 테마 기준 분류 장소 좌표(예: 바다 → 해변). 호출 측이 DB에서 읽어 넘긴다(여기는 순수 계산)."""
     c = config()["course"]
@@ -410,6 +431,7 @@ def build_course(cands: list[dict], cond, rain_by_day: list[float | None] | None
     if len(cands) < c["places_per_day_min"]:
         return {"days": [], "notices": notices + ["후보가 부족해 코스를 만들 수 없습니다. 조건을 넓혀 볼까요?"]}
     rain = (list(rain_by_day or []) + [None] * days)[:days]
+    rain_hours = (list(rain_hours_by_day or []) + [None] * days)[:days]
     hours = cond.hours or c["default_available_hours"]
     k = places_per_day(hours)
     # 사용자가 분류를 지정했으면(테마가 분류 하나에만 대응하는 경우 포함, 예: 맛집 → 음식점) 연속 제한을 두지 않는다 (FR-006)
@@ -486,7 +508,8 @@ def build_course(cands: list[dict], cond, rain_by_day: list[float | None] | None
         others = {p["place_id"] for g in groups if g is not group for p in g} | used  # 점심 식당도 다른 날과 겹치지 않게
         seq, n = plan_day(sc(group, rain[d]), min(k, len(group)), hours, cond.mode, check_variety, food_cap, meals,
                           lunch_pool=[p for p in sc(cands) if p["place_id"] not in others],
-                          outdoor_cap=config()["weather"]["rain_outdoor_max"] if rainy(rain[d]) else None)
+                          outdoor_cap=config()["weather"]["rain_outdoor_max"] if rainy(rain[d]) else None,
+                          rain_hours=rain_hours[d] if rainy(rain[d]) else None)
         used |= {p["place_id"] for p in seq}
         notices += [f"{d + 1}일차: {m}" if days > 1 else m for m in n]
         if rain[d] is not None and rain[d] >= config()["weather"]["rain_prob_threshold"]:

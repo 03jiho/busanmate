@@ -455,6 +455,7 @@ def test_umbrella_badge_and_taxi_hint():
     a, b = course["days"][0]["items"]
     assert a["umbrella"] is True and b["umbrella"] is False
     assert a["leg_to_next"]["taxi_hint_min"] == 4  # 1.7km ÷ 25km/h
+    assert a["leg_to_next"]["rain_taxi"] is True  # 비 오는 날 야외 장소에서 나오는 구간: 택시 추천
 
 
 
@@ -485,3 +486,11 @@ def test_parser_steps_skip_separate_tool_call(fake):
     r = chat(str(uuid.uuid4()), "이번 토요일 바다 코스")
     assert r["tool_calls"] == [s["name"] for s in steps] and r["course"]
     assert not any(k == ["steps"] for k in llm.json_schemas)  # 도구 선택 전용 호출 없음
+
+
+def test_reason_grounding():
+    """원문에 없는 사실을 지어낸 추천 이유는 걸러진다 (본 앤 브레드: 카페 분류에 한우 설명 사례)."""
+    cafe = {"name": "브레드 공방", "category": "카페", "gu": "중구", "address": "중구 광복로 1",
+            "description": "브레드 공방\n대표 메뉴: 커피, 케이크\n갓 구운 빵과 커피를 파는 동네 빵집이다."}
+    assert response.grounded("갓 구운 빵과 커피를 즐길 수 있는 곳", cafe)
+    assert not response.grounded("최상급 한우를 숙성해 내는 스테이크", cafe)

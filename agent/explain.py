@@ -62,9 +62,13 @@ def enrich(course: dict, places: dict[int, dict], cond) -> None:
             item["why"] = why(p, cond, d.get("rain_prob"), times[k][0], prev, must, near_points)
             item["umbrella"] = rainy(d.get("rain_prob")) and is_outdoor(p)  # 비 오는 날 불가피하게 넣은 야외 장소
             leg = item.get("leg_to_next")
-            if leg and leg["mode"] == "walk" and leg["minutes"] > config()["course"]["walk_taxi_hint_min"]:
+            nxt = places.get(d["items"][k + 1]["place_id"]) if k + 1 < len(d["items"]) else None
+            # 비 오는 날 야외 장소로 가거나 나오는 도보 구간은 짧아도 택시를 먼저 권한다
+            wet = rainy(d.get("rain_prob")) and (is_outdoor(p) or bool(nxt and is_outdoor(nxt)))
+            if leg and leg["mode"] == "walk" and (wet or leg["minutes"] > config()["course"]["walk_taxi_hint_min"]):
                 taxi = config()["travel"]["speed_kmh"]["taxi"]
                 leg["taxi_hint_min"] = max(1, round((leg.get("meters") or 0) / 1000 / taxi * 60))
+                leg["rain_taxi"] = wet
     course["sourced"] = {"count": sourced, "total": total}
     course["estimate_basis"] = estimate_basis()
     course["budget"] = course_budget(course, places)

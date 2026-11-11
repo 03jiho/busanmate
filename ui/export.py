@@ -36,6 +36,16 @@ def link_of(s: dict | None) -> tuple[str, str] | None:
     return None
 
 
+def source_text(s: dict) -> str:
+    """PDF용 출처 줄 (카드와 같은 형식, 링크는 주소 그대로): 출처: 제공처 · 원본 링크 · 이용 조건."""
+    found = link_of(s)
+    if not found:
+        link = "원본 링크 없음"
+    else:
+        link = f"원본 링크 {found[1]}" if found[0] == "원본 링크" else f"원본 링크 없음 · 공공데이터포털 {found[1]}"
+    return f"출처: {s['label']} · {link} · {s.get('license') or '이용 조건 정보 없음'}"
+
+
 def hm(minutes: int) -> str:
     h, m = divmod(int(minutes), 60)
     return f"{h}시간 {m}분" if h and m else f"{h}시간" if h else f"{m}분"
@@ -201,7 +211,7 @@ def course_pdf(r: dict) -> bytes:
             if item.get("reason"):
                 block.append((item["reason"], f_body, INK, 0))
             if src:
-                block.append((f"출처: {src['label']} · {(link_of(src) or ('', '원본 링크 없음'))[1]} · 이용 조건: {src['license']}",
+                block.append((source_text(src),
                               f_small, GRAY, 0))
             if item.get("leg_to_next"):
                 block.append((f"↓ {leg_text(item['leg_to_next'])}", f_small, WALK if item["leg_to_next"]["mode"] == "walk"
@@ -216,7 +226,7 @@ def course_pdf(r: dict) -> bytes:
         if y > H - 300:
             d, y = new_page()
         for o in others:
-            y = text(d, y, f"출처: {o['label']} · {(link_of(o) or ('', '원본 링크 없음'))[1]} · 이용 조건: {o['license']}", f_small, GRAY)
+            y = text(d, y, source_text(o), f_small, GRAY)
     buf = io.BytesIO()
     pages[0].save(buf, "PDF", resolution=150, save_all=True, append_images=pages[1:])
     return buf.getvalue()

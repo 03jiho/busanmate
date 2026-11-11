@@ -40,6 +40,7 @@ class State(TypedDict, total=False):
     candidates: list
     course: dict | None
     rain_by_day: list | None
+    rain_hours_by_day: list | None
     festivals: list
     messages: list
     pending: list

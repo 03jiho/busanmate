@@ -120,7 +120,8 @@ def theme_points(theme: str | None) -> list[tuple[float, float]]:
 def source_of(p: dict) -> dict:
     src = config()["sources"][p["source"]]
     return {"place_id": p["place_id"], "name": p["name"], "label": src["label"], "url": p["url"],
-            "portal_url": src.get("portal_url"), "license": p["license"], "image": p.get("image")}
+            "portal_url": src.get("portal_url"), "license": p["license"], "image": p.get("image"),
+            "original": p.get("description")}  # 카드의 '원문 보기': 공공데이터 소개문 그대로
 
 
 def _where(c: Conditions) -> dict | None:

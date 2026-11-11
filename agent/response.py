@@ -88,6 +88,24 @@ def clip(text: str | None, limit: int = 110) -> str | None:
     return out if re.search(r"[.!?。…]$", out) else out + "…"
 
 
+# 근거 검사에서 빼는 일반어(추천 문장에 흔한 서술·평가어). ponytail: 형태소 분석 없이 어절 앞부분 대조, 오탐이 잦으면 형태소 분석기로
+_GENERIC = {"장소", "곳", "수", "있는", "있어요", "있습니다", "즐길", "즐기기", "즐길수", "좋은", "좋아요", "좋습니다", "추천", "추천해요",
+            "방문", "방문하기", "들르기", "들러", "분위기", "여유롭게", "함께", "가볍게", "천천히", "잠시", "코스", "여행", "부산",
+            "산책", "구경", "둘러보기", "곳이에요", "곳입니다", "만나", "느낄", "느껴", "경험", "시간", "보내기", "가기", "다양한"}
+_JOSA_TAIL = re.compile(r"(으로|에서|에게|까지|부터|이에요|예요|입니다|이며|이고|하고|은|는|이|가|을|를|의|에|로|도|와|과|만|한|할|해)$")
+
+
+def grounded(reason: str, p: dict) -> bool:
+    """추천 이유의 핵심 낱말이 원문(이름·분류·주소·소개문)에 있는가. 절반 넘게 원문에 없으면 근거 없는 문장으로 본다."""
+    src = " ".join(str(p.get(k) or "") for k in ("name", "category", "gu", "address", "description"))
+    words = [_JOSA_TAIL.sub("", w) for w in re.findall(r"[가-힣A-Za-z0-9]{2,}", reason)]
+    keys = [w for w in words if len(w) >= 2 and w not in _GENERIC]
+    if not keys:
+        return True
+    found = sum(any(w[:n] in src for n in range(len(w), 1, -1)) for w in keys)
+    return found * 2 >= len(keys)
+
+
 def intro_line(p: dict) -> str | None:
     """LLM이 실패했을 때의 추천 이유: DB 소개 문구 중 장소명이 아닌 첫 줄(원천 설명의 첫 줄은 제목인 경우가 많다)."""
     return next((clip(line.strip(), 80) for line in (p.get("description") or "").split("\n")
@@ -144,6 +162,7 @@ def build_response(state: dict) -> dict:
     context = {
         "request": state.get("message"), "intent": intent,
         "places": [{"id": i, "name": places[i]["name"], "category": places[i]["category"], "gu": places[i]["gu"],
+                    "address": places[i].get("address"),
                     "summary": (places[i]["description"] or "")[:120]} for i in ids],
         "course": [{"day": d["day"], "order": [i["place_id"] for i in d["items"]]} for d in course["days"]] if course else None,
         "weather": state.get("rain_by_day"),
@@ -158,6 +177,10 @@ def build_response(state: dict) -> dict:
         for r in out.get("reasons", []):
             if r["place_id"] in allowed:
                 text, bad = verify_places(r["reason"], allowed)
+                if not grounded(text, places[r["place_id"]]):  # 원문에 없는 사실(메뉴·시설·역사)을 지어냈다 → 원문 한 문장으로
+                    STATS["reason_ungrounded"] += 1
+                    log.warning("추천 이유 근거 없음 id=%s", r["place_id"])
+                    text = intro_line(places[r["place_id"]])
                 reasons[r["place_id"]], dropped = text, dropped + bad
         if dropped:
             log.warning("verify_places 제거 id=%s", dropped)  # ERR-007

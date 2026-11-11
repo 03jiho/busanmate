@@ -195,10 +195,23 @@ def show_map(items: list[dict], keys: list[str]) -> None:
 
 
 def link_md(s: dict | None) -> str:
-    """원본 링크가 있으면 그것을, 없으면 공공데이터포털 서비스 페이지를 링크한다 (FR-003)."""
-    if found := link_of(s):
-        return f"[{found[0]}]({found[1]})"
-    return "원본 링크 없음"
+    """원본 링크가 있으면 그것을, 없으면 '원본 링크 없음'과 공공데이터포털 서비스 페이지를 대체로 링크한다 (FR-003)."""
+    found = link_of(s)
+    if found and found[0] == "원본 링크":
+        return f"[원본 링크]({found[1]})"
+    return "원본 링크 없음" + (f" · [공공데이터포털 서비스 페이지]({found[1]})" if found else "")
+
+
+def source_line(s: dict | None) -> str:
+    """모든 출처 줄의 형식: 출처: 제공처 · 원본 링크(없으면 '원본 링크 없음' · 포털 페이지) · 이용 조건."""
+    if not s:
+        return "출처: 정보 없음 · 원본 링크 없음"
+    return f"출처: {s['label']} · {link_md(s)} · {s.get('license') or '이용 조건 정보 없음'}"
+
+
+def photo_line(s: dict, image: dict) -> str:
+    """사진 출처 줄도 같은 형식: 사진 출처: 제공처 · 원본 이미지 링크 · 이용 조건."""
+    return f"사진 출처: {s['label']} · [원본 이미지]({image['url']}) · {image.get('license') or '이용 조건 정보 없음'}"
 
 
 def place_card(key: str, title: str, sub: str, reason: str | None, source: dict | None,
@@ -218,12 +231,12 @@ def place_card(key: str, title: str, sub: str, reason: str | None, source: dict 
             st.markdown("<span class='umb'>비 올 때는 우산 필요</span>", unsafe_allow_html=True)
         if why:
             st.caption(f"왜 이곳? {' · '.join(why)}")
-        if source:
-            link = link_md(source)
-            photo = f" · 사진: {image['license']}" if image else ""
-            st.caption(f"출처: {source['label']} · {link} · {source['license']}{photo}")
-        else:
-            st.caption("출처 정보 없음 · 원본 링크 없음")
+        st.caption(source_line(source))
+        if source and image:
+            st.caption(photo_line(source, image))
+        if (source or {}).get("original"):
+            with st.expander("원문 보기"):  # 공공데이터 원문 소개를 고치지 않고 그대로
+                st.text(source["original"])
         if edit:
             r, day, index = edit
             a, b = st.columns(2)
@@ -413,7 +426,9 @@ def show_result(r: dict, key: str, latest: bool = False, stream: bool = False, r
                         if leg := i.get("leg_to_next"):  # 지도 선과 같은 모양: 도보 점선, 택시 실선
                             tip = html.escape(basis, quote=True)
                             text = html.escape(leg_text(leg)).replace("(예상)", f"<span class='est' title='{tip}'>(예상)</span>")
-                            if leg.get("taxi_hint_min"):  # 걸어서 15분이 넘는 구간
+                            if leg.get("rain_taxi"):  # 비 오는 날 야외 장소 앞뒤 구간
+                                text += f" · 비 예보가 있어 택시 추천(약 {leg['taxi_hint_min']}분)"
+                            elif leg.get("taxi_hint_min"):  # 걸어서 15분이 넘는 구간
                                 text += f" · 택시를 타면 약 {leg['taxi_hint_min']}분"
                             st.markdown(f"<div class='leg {leg['mode']}'>{text}</div>", unsafe_allow_html=True)
                 if editable and len(d["items"]) > 1:  # 드래그로 순서 바꾸기 → 이동 시간·시각 바로 다시 계산
@@ -428,8 +443,7 @@ def show_result(r: dict, key: str, latest: bool = False, stream: bool = False, r
                    by_place.get(p["place_id"]))
     others = [s for s in r.get("sources") or [] if "place_id" not in s]  # 기상청·축제 등
     for s in others:
-        link = link_md(s)
-        st.caption(f"출처: {s['label']} · {link} · {s['license']}")
+        st.caption(source_line(s))
     if course and course.get("days"):
         budget_box(course)
         export_tools(r, key, readonly)

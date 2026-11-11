@@ -64,7 +64,9 @@ classify:
   food: {category: 음식점, indoor: true}
   # 맛집 데이터 중 카페: 이름이나 대표 메뉴에 이 말이 있으면 음식점이 아니라 카페 (코스 수정의 "카페 추가")
   cafe: {category: 카페, indoor: true, keywords: [카페, 커피, 디저트, 베이커리, 브레드, 로스터, 제과, 다방, 티하우스, cafe, coffee],
-         menu_keywords: [커피, 아메리카노, 라떼, 디저트, 케이크, 빙수]}
+         menu_keywords: [커피, 아메리카노, 라떼, 디저트, 케이크, 빙수, 말차, 전통차],
+         # 이름에 '브레드' 등이 있어도 대표 메뉴가 식사면 음식점 (예: 본 앤 브레드 = 스테이크하우스, 2026-11-12)
+         food_menu_keywords: [스테이크, 한우, 갈비, 고기, 코스요리, 육회, 회, 초밥, 국밥, 정식, 한식, 일식, 중식, 양식, 파스타, 피자]}
   rules:
     - {category: 시장, indoor: null, keywords: [시장, 지하도상가]}
     - {category: 해변, indoor: false, names: [해운대, 청사포와 미포, 동백섬], keywords: [해수욕장, 해변, 해안, 해파랑길]}
@@ -151,7 +153,8 @@ preferences:                        # FR-005 선호 테마 → 가산점을 줄 
 weather:                            # COMP-07, FR-004
   rain_prob_threshold: 60
   rain_outdoor_max: 2               # 초안: 강수확률이 임계 이상인 날의 야외 장소 상한(실내 후보가 모자랄 때만 넘김)
-  rain_outdoor_penalty: 0.3         # 초안: 그날 야외 장소 점수에서 더 뺀다(날씨 항 0과 별도)
+  rain_outdoor_penalty: 0.3
+  rain_hour_weight_km: 3             # 비 오는 날 순서 정하기: 야외 장소 체류 시간대 강수확률 100%를 이동거리 몇 km로 칠지         # 초안: 그날 야외 장소 점수에서 더 뺀다(날씨 항 0과 별도)
   outdoor_categories: [해변, 공원·자연]
   outdoor_name_keywords: [산책로, 전망대, 둘레길, 갈맷길, 해수욕장, 해변, 해안, 공원, 스카이워크, 등대, 계곡]
   outdoor_desc_keywords: [야경]      # 설명에 이 말이 있으면 야외(야경 명소)로 본다
