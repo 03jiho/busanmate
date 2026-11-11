@@ -23,6 +23,10 @@ COMPANIONS = ["선택 안 함", "혼자", "친구", "연인", "가족", "부모�
 RAIN_THRESHOLD = 60  # config weather.rain_prob_threshold와 같게 (UI는 api만 호출하므로 표시용으로만 둔다)
 EXAMPLES = ["이번 토요일 해운대에서 부모님과 걷기 좋은 바다 코스", "다음 주 금요일부터 1박 2일 중구 역사·문화 여행",
             "광안리 근처 비 오는 날 갈 만한 실내 장소"]
+# 첫 화면 예시 카드: (아이콘, 테마, 질문, 결과 미리보기). 미리보기는 2026-11-11 실제 실행 결과(두 번 같음)
+EXAMPLE_CARDS = [("waves", "바다", EXAMPLES[0], "6곳 · 약 7시간 · 도보·택시"),
+                 ("account_balance", "역사·문화", EXAMPLES[1], "1박 2일 · 하루 6곳 · 도보 위주"),
+                 ("umbrella", "비 오는 날", EXAMPLES[2], "실내 명소 5곳")]
 # 버튼 → 구조화된 수정 요청(API-001 edit.kind). 문장 해석 없이 직전 코스를 제자리에서 고친다 (FR-012, edit_course)
 EDITS = {"실내로 바꾸기": "indoor", "카페 추가": "cafe", "더 짧게": "shorter"}
 MAP_H = 480
@@ -47,11 +51,24 @@ h1 {{font-size: 1.6rem !important; font-weight: 700 !important; letter-spacing: 
 .chip b {{color: #6b6760; font-weight: 500; margin-right: .3rem;}}
 .daysum {{font-size: .88rem; color: #3d3a35; margin: .2rem 0 .8rem;}}
 .bm-active {{outline: 2px solid {ACCENT}; outline-offset: 2px; background: #eef4fb;}}
-.intro {{max-width: 640px; color: #3d3a35; line-height: 1.7; margin: 1rem 0 1.2rem;}}
 @media (max-width: 640px) {{  /* 휴대폰: 지도는 낮게, 카드 썸네일은 작게 */
   [data-testid="stMainBlockContainer"] iframe[title="st.iframe"] {{height: 340px !important;}}
   [data-testid="stMainBlockContainer"] {{padding-left: 1rem; padding-right: 1rem;}}
 }}
+.hero {{text-align: center; margin: 4vh 0 1.6rem;}}
+.brand-lg {{font-size: 2rem; font-weight: 700; letter-spacing: -0.02em;}}
+.brand {{font-size: 1.15rem; font-weight: 700; letter-spacing: -0.01em;}}
+.slogan {{font-size: 1.25rem; margin: .4rem 0 .2rem; color: #1d1d1f;}}
+.sub {{font-size: .9rem; color: #6b6760; margin: 0;}}
+.st-key-start-course, .st-key-start-photo {{min-height: 260px;}}
+[class*='st-key-ex-card'] {{min-height: 245px;}}
+@media (max-width: 640px) {{  /* 휴대폰: 카드는 세로로 쌓이니 높이 맞춤을 풀고, 첫 화면 위 여백을 줄인다 */
+  .st-key-start-course, .st-key-start-photo, [class*='st-key-ex-card'] {{min-height: 0;}}
+  .hero {{margin-top: 1vh;}}
+}}
+.st-key-steps {{text-align: center; margin: .6rem 0 .2rem;}}
+.badges {{display: flex; flex-wrap: wrap; justify-content: center; gap: .4rem; margin: 1.4rem 0 .4rem;}}
+.badges span {{font-size: .75rem; color: #6b6760; border: 1px solid #e3e0d8; border-radius: 999px; padding: .1rem .6rem; background: #fff;}}
 .footer {{color: #8a857c; font-size: .75rem; line-height: 1.6; border-top: 1px solid #e3e0d8;
   padding-top: .8rem; margin-top: 2rem;}}
 </style>"""
@@ -314,12 +331,69 @@ def export_tools(r: dict, key: str) -> None:
         st.code(share_text(r), language=None, wrap_lines=True)
 
 
+def photo_uploader(key: str) -> None:
+    photo = st.file_uploader("JPG·PNG, 10MB까지", type=["jpg", "jpeg", "png"], key=key)
+    if photo and st.button("비슷한 곳 찾기", key=f"{key}-go", use_container_width=True, type="primary"):
+        ss.queued_photo = (photo.name, photo.getvalue(), photo.type)  # 브라우저 세션 메모리에만, 저장하지 않는다
+
+
+def new_course() -> None:
+    """대화를 비우고 새 세션으로 시작한다 (서버의 직전 코스·되묻기 상태도 새 세션이라 이어지지 않는다)."""
+    ss.history, ss.sid, ss.prefs = [], uuid.uuid4().hex, None
+
+
+def hero() -> None:
+    """첫 화면: 무엇을 하는 서비스인지 5초 안에 — 슬로건, 두 가지 시작 방법, 3단계, 예시, 샘플 결과, 출처 배지."""
+    st.markdown("<div class='hero'><div class='brand-lg'>BusanMate</div>"
+                "<p class='slogan'>말만 하면 부산 하루 코스가 완성돼요</p>"
+                "<p class='sub'>공공데이터 기반 · 날씨 반영 · 출처 표시</p></div>", unsafe_allow_html=True)
+    a, b = st.columns(2)
+    with a, st.container(border=True, key="start-course"):
+        st.markdown("#### :material/route: 코스 짜기")
+        st.caption("날짜·동네·누구와를 적으면 지도와 시간표가 있는 하루 동선을 짜 줘요.")
+        st.markdown(":gray[예) 이번 토요일 해운대, 부모님과 걷기 좋은 바다 코스]")
+        st.button("질문 입력하기", on_click=lambda: ss.update(focus_input=True), type="primary",
+                  use_container_width=True, icon=":material/edit:")
+    with b, st.container(border=True, key="start-photo"):
+        st.markdown("#### :material/photo_camera: 사진으로 장소 찾기")
+        st.caption("부산 명소 사진을 올리면 어디인지, 분위기가 비슷한 곳은 어디인지 찾아요.")
+        photo_uploader("photo_main")
+    with st.container(key="steps"):
+        st.markdown(":material/edit_note: **1** 날짜·동네·누구와 입력 &nbsp;→&nbsp; :material/partly_cloudy_day: **2** 날씨와 동선 반영"
+                    " &nbsp;→&nbsp; :material/map: **3** 지도·타임라인·PDF")
+    st.caption("이렇게 물어보세요")
+    for col, (n, (icon, theme_, q, preview)) in zip(st.columns(3), enumerate(EXAMPLE_CARDS)):
+        with col, st.container(border=True, key=f"ex-card-{n}"):
+            st.markdown(f":material/{icon}: **{theme_}**")
+            st.markdown(q)
+            st.caption(preview)
+            st.button("이 질문으로 시작", key=f"ex-go-{n}", on_click=ask, args=(q,), use_container_width=True)
+    with st.expander("이런 결과가 나와요"):
+        st.image(str(Path(__file__).parent / "assets" / "sample-course.jpg"),
+                 caption="해운대 바다 코스 결과 화면 (조건 칩, 시간표, 번호 지도, 장소 카드와 출처)")
+    with st.expander("더 알아보기"):
+        st.markdown("장소는 부산시 공공데이터(명소·맛집·축제)에 있는 곳만 쓰고, 카드마다 출처와 원본 링크를 답니다. "
+                    "비 예보가 있는 날은 실내 장소에 점수를 더 주고, 식당은 점심 시간에 맞춰 넣어요. 짠 뒤에는 "
+                    "\"카페 추가\", \"더 짧게\"처럼 버튼이나 말로 고칠 수 있고, PDF로 내보낼 수 있어요.")
+    st.markdown("<div class='badges'><span>공공데이터포털 부산시 제공</span><span>기상청 예보 반영</span>"
+                "<span>모든 장소에 출처·원본 링크</span></div>", unsafe_allow_html=True)
+
+
+# 입력은 사이드바보다 먼저 읽는다(첫 질문을 처리하는 실행에서도 대화 중 화면이 되게). 입력창은 하단에 고정된다
+typed = st.chat_input("예) 이번 토요일 해운대, 부모님과 걷기 좋은 바다 코스")
+message, edit_kind = typed or ss.pop("queued", None), ss.pop("queued_edit", None)
+edit_kind = None if typed else edit_kind  # 직접 입력한 질문이면 버튼 수정 요청은 버린다
+busy = bool(message or ss.get("queued_photo"))
+
 # --- 사이드바: 선호 설정(FR-005), 사진, 관리자 ---
 with st.sidebar:
     st.header("여행 조건")
     theme = st.selectbox("테마", THEMES)
+    st.caption("고르면 그 테마의 장소가 추천에 우선 반영돼요.")
     mode = st.radio("이동", list(MODES), format_func=MODES.get)
+    st.caption("도보만 골라도 걸어서 30분이 넘는 구간은 택시로 계산해요.")
     companion = st.selectbox("누구와", COMPANIONS)
+    st.caption("조건과 추천 설명에 참고해요. 장소 점수에는 아직 쓰지 않아요.")
     prefs = {"theme": None if theme == THEMES[0] else theme, "mode": mode,
              "companion": None if companion == COMPANIONS[0] else companion}
     if ss.get("prefs") != prefs:
@@ -327,10 +401,9 @@ with st.sidebar:
         ss.prefs = prefs
     st.caption("질문에 쓴 조건이 있으면 그쪽을 먼저 따릅니다.")
 
-    st.header("사진으로 찾기")
-    photo = st.file_uploader("JPG·PNG, 10MB까지", type=["jpg", "jpeg", "png"])
-    if photo and st.button("비슷한 곳 찾기", use_container_width=True, type="primary"):
-        ss.queued_photo = (photo.name, photo.getvalue(), photo.type)  # 브라우저 세션 메모리에만, 저장하지 않는다
+    if ss.history or busy:  # 첫 화면에서는 본문 카드에 업로더가 있고, 대화가 시작되면 사이드바로 옮긴다
+        st.header("사진으로 찾기")
+        photo_uploader("photo_side")
 
     if "admin" in st.query_params:  # 관리자 화면은 ?admin 으로 들어올 때만 보인다 (API는 토큰으로 따로 막는다)
         st.header("관리자")
@@ -343,20 +416,15 @@ with st.sidebar:
             st.json(api("GET", f"/api/admin/ingest/{ss.run_id}", headers={"X-Admin-Token": token}))
 
 # --- 본문: 대화 (UI-01, UI-02) ---
-typed = st.chat_input("예) 이번 토요일 해운대, 부모님과 걷기 좋은 바다 코스")
-message, edit_kind = typed or ss.pop("queued", None), ss.pop("queued_edit", None)
-edit_kind = None if typed else edit_kind  # 직접 입력한 질문이면 버튼 수정 요청은 버린다
-busy = bool(message or ss.get("queued_photo"))
-st.title("BusanMate")
-
-if not ss.history and not busy:  # 첫 화면: 소개 + 예시 질문
-    st.markdown("<div class='intro'>날짜와 동네, 함께 가는 사람을 적으면 하루 동선을 짜고 장소마다 예상 시각과 "
-                "이동 시간을 붙여 줍니다. 장소는 부산시 공공데이터(명소·맛집·축제)에 있는 곳만 쓰고, 카드마다 출처와 "
-                "원본 링크를 답니다. 비 예보가 있는 날은 실내 장소에 점수를 더 주고, 짠 뒤에는 \"카페 추가\"처럼 "
-                "말로 고칠 수 있습니다.</div>", unsafe_allow_html=True)
-    st.caption("이렇게 물어보세요")
-    for col, ex in zip(st.columns(3), EXAMPLES):
-        col.button(ex, on_click=ask, args=(ex,), use_container_width=True)
+if ss.history or busy:  # 대화 중: 히어로는 숨기고 작은 제목과 "새 코스"만
+    left, right = st.columns([5, 1], vertical_alignment="center")
+    left.markdown("<div class='brand'>BusanMate</div>", unsafe_allow_html=True)
+    right.button("새 코스", on_click=new_course, icon=":material/add:", use_container_width=True)
+else:
+    hero()
+if ss.pop("focus_input", False):  # "질문 입력하기": 하단 입력창에 커서를 둔다
+    components.html("<script>const t = window.parent.document.querySelector('[data-testid=\"stChatInputTextArea\"]');"
+                    "if (t) t.focus();</script>", height=0)
 
 for n, h in enumerate(ss.history):
     with st.chat_message(h["role"]):
