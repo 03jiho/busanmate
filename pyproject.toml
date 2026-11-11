@@ -1,0 +1,10 @@
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 150  # 한글 주석·문자열과 UI 안의 JS 줄이 길다
+extend-exclude = ["docs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]  # 기본 규칙 + import 정렬. 외부 API 폴백의 넓은 except는 의도된 것(SDD §7.4)

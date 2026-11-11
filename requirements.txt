@@ -1,0 +1,22 @@
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+streamlit==1.66.1
+streamlit-sortables==0.3.1   # 코스 카드 드래그 정렬 (FR-012)
+requests==2.34.2
+PyYAML==6.0.3
+python-dotenv==1.2.4
+psycopg[binary]==3.3.7
+chromadb-client==1.5.8      # docker-compose의 chromadb/chroma 이미지와 같은 버전
+google-genai==2.34.0
+langgraph==1.2.19
+python-multipart==0.0.33    # API-002 파일 업로드
+# 사진 탐색(CLIP): PyTorch는 CPU 빌드
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.15.0+cpu
+open_clip_torch==3.3.0
+pillow==13.0.0
+# dev
+pytest==9.2.0
+ruff==0.17.3
+httpx==0.28.1
+python-docx==1.2.0

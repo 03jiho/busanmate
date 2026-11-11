@@ -1,0 +1,52 @@
+# SDD §10.1 배포 구성. 실행: docker compose up --build
+services:
+  ui:
+    build: .
+    command: streamlit run ui/app.py --server.port 8501 --server.address 0.0.0.0
+    ports: ["8501:8501"]
+    environment:
+      API_URL: http://api:8000
+    env_file: .env          # KAKAO_JAVASCRIPT_KEY (지도)
+    depends_on: [api]
+
+  api:
+    build: .
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
+    ports: ["8000:8000"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://busanmate:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/busanmate
+      CHROMA_HOST: vector
+      CHROMA_PORT: "8000"
+    volumes:
+      - hf_cache:/root/.cache/huggingface   # CLIP 가중치를 다시 받지 않게
+    depends_on:
+      db: {condition: service_healthy}     # 스키마 초기화가 끝나 연결을 받을 때까지 기다린다
+      vector: {condition: service_started}
+
+  db:
+    image: postgres:16
+    ports: ["5432:5432"]
+    environment:
+      POSTGRES_DB: busanmate
+      POSTGRES_USER: busanmate
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U busanmate -d busanmate"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  vector:
+    image: chromadb/chroma:1.5.8     # chromadb-client와 같은 버전 유지
+    ports: ["8001:8000"]
+    volumes:
+      - chroma:/data
+
+volumes:
+  pgdata:
+  chroma:
+  hf_cache:
