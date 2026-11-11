@@ -97,10 +97,16 @@ course:                             # COMP-06, FR-006, FR-014
   places_per_day_max: 6
   default_available_hours: 9
   max_days: 3
-  default_stay_min: 60              # 초안: 장소당 평균 체류
+  default_stay_min: 60              # 초안: 장소당 평균 체류 (아래 표에 없는 분류, 하루 장소 수 계산)
+  stay_min_by_category: {거리·마을: 35, 해변: 35, 문화시설: 75, 음식점: 60, 카페: 40, 공원·자연: 50, 관광지: 60, 시장: 50, 사찰·종교: 40}
+  stay_min_by_name: {미술관: 90, 박물관: 90, 전망대: 40}  # 이름에 들어 있으면 분류 값보다 우선
+  shorter_ratio: 0.75               # '더 짧게': 그날 장소별 체류 시간에 곱한다(5분 단위). 모두 하한이면 한 곳을 뺀다
+  min_stay_min: 20                  # 체류 시간 하한
   day_start: "10:00"                # 초안: 하루 출발 시각 (화면의 방문 예정 시각 계산 기준)
   dinner_window: ["17:30", "19:30"]  # 초안: 식당은 점심·저녁 시간대에 도착할 때만 둔다(첫 장소 10:00에 식당 금지)
-  walk_taxi_hint_min: 15            # 도보 구간이 이보다 길면 화면에 '택시를 타면 약 N분'을 함께 보여 준다
+  walk_taxi_hint_min: 10            # 도보 구간이 이 이상이면 화면에 '택시를 타면 약 N분'을 함께 보여 준다
+  alt_max_detour_km: 8              # '다른 곳으로 교체' 후보는 우회 거리가 이 안인 같은 분류만 (멀면 후보 없음으로 안내)
+  walk_no_taxi_max_min: 5           # 이 이하 도보에는 택시를 권하지 않는다(비 오는 날 야외 장소 앞뒤라도)
   lunch_window: ["11:30", "13:30"]  # 초안: 점심 시간대. 체류 합이 lunch_min_stay_min 이상이면 이 사이에 도착하는 식당 1곳을 보장
   lunch_min_stay_min: 300           # 초안: 하루 체류 합이 5시간 이상이면 점심 식당을 넣는다
   cafe_per_day: 1                   # 초안: 하루 카페 상한. 식당·카페는 연달아 두지 않는다(먹는 곳은 하루 장소의 절반 이하)
@@ -154,6 +160,7 @@ weather:                            # COMP-07, FR-004
   rain_prob_threshold: 60
   rain_outdoor_max: 2               # 초안: 강수확률이 임계 이상인 날의 야외 장소 상한(실내 후보가 모자랄 때만 넘김)
   rain_outdoor_penalty: 0.3
+  rain_first_outdoor_km: 50         # 비 오는 날 첫 장소가 야외면 더하는 거리 비용(가능하면 실내로 시작)
   rain_hour_weight_km: 3             # 비 오는 날 순서 정하기: 야외 장소 체류 시간대 강수확률 100%를 이동거리 몇 km로 칠지         # 초안: 그날 야외 장소 점수에서 더 뺀다(날씨 항 0과 별도)
   outdoor_categories: [해변, 공원·자연]
   outdoor_name_keywords: [산책로, 전망대, 둘레길, 갈맷길, 해수욕장, 해변, 해안, 공원, 스카이워크, 등대, 계곡]

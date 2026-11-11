@@ -30,10 +30,13 @@ def taxi_fare(leg: dict) -> tuple[int, bool]:
 def course_budget(course: dict, places: dict[int, dict]) -> dict:
     """날짜별 {day, meals, taxi, total} + 합계. 먹는 곳 카드에는 price_won·price_estimated를 붙인다."""
     eat = {config()["classify"]["food"]["category"], config()["classify"]["cafe"]["category"]}
-    days, estimated = [], False
+    days, estimated, extra_legs = [], False, []
     for d in course["days"]:
         meals = taxi = 0
         for item in d["items"]:
+            hint = item.get("leg_to_next") or {}
+            if hint.get("mode") == "walk" and hint.get("taxi_hint_min"):  # 택시 제안 구간을 다 타면 늘어나는 요금
+                extra_legs.append(taxi_fare(hint)[0])
             if item["category"] in eat and item["place_id"] in places:
                 item["price_won"], item["price_estimated"] = meal_price(places[item["place_id"]])
                 meals += item["price_won"]
@@ -45,4 +48,5 @@ def course_budget(course: dict, places: dict[int, dict]) -> dict:
                 estimated |= est
         days.append({"day": d["day"], "meals": meals, "taxi": taxi, "total": meals + taxi})
     return {"days": days, "meals": sum(x["meals"] for x in days), "taxi": sum(x["taxi"] for x in days),
-            "total": sum(x["total"] for x in days), "estimated": estimated}
+            "total": sum(x["total"] for x in days), "estimated": estimated,
+            "taxi_hint_legs": len(extra_legs), "taxi_hint_extra": sum(extra_legs)}

@@ -25,6 +25,9 @@ def why(p: dict, cond, rain: float | None, arrive: int, prev_leg: dict | None, m
     out = []
     if p["place_id"] in must:
         out.append("요청한 장소")
+    gu = getattr(cond, "gu", None) or []
+    if p.get("gu") in gu:
+        out.append(f"요청한 지역({p['gu']})")
     near = (prefs.get("theme_near") or {}).get(theme, {})
     close = any(haversine_km(p["lat"], p["lng"], *q) <= near.get("km", 0) for q in near_points or [])
     if theme and (p["category"] in prefs["theme_categories"].get(theme, [])
@@ -33,13 +36,16 @@ def why(p: dict, cond, rain: float | None, arrive: int, prev_leg: dict | None, m
     if p.get("indoor") and getattr(cond, "indoor", None):
         out.append("실내 요청")
     elif p.get("indoor") and rain is not None and rain >= config()["weather"]["rain_prob_threshold"]:
-        out.append(f"비 올 확률 {rain:.0f}% · 실내")
-    lo, hi = (int(x[:2]) * 60 + int(x[3:]) for x in c["lunch_window"])
-    if p["category"] == config()["classify"]["food"]["category"] and lo <= arrive <= hi:
-        out.append("점심 시간에 맞춤")
+        out.append(f"비 올 확률 {rain:.0f}%라 실내")
+    elif rain is not None and rain < config()["weather"]["rain_prob_threshold"] and is_outdoor(p):
+        out.append(f"비 올 확률 {rain:.0f}%로 야외 둘러보기 좋음")
+    for key, label in (("lunch_window", "점심"), ("dinner_window", "저녁")):
+        lo, hi = (int(x[:2]) * 60 + int(x[3:]) for x in c[key])
+        if p["category"] == config()["classify"]["food"]["category"] and lo <= arrive <= hi:
+            out.append(f"{label} 시간에 맞춤")
     if prev_leg and prev_leg["mode"] == "walk":
         out.append(f"앞 장소에서 걸어서 {prev_leg['minutes']}분")
-    return out or ["질문 내용과 설명이 비슷함"]  # 점수의 유사도 항(검색 질의와 장소 설명)
+    return out  # 맞은 조건이 없으면 비워 둔다(화면은 '왜 이곳?' 줄을 생략)
 
 
 def enrich(course: dict, places: dict[int, dict], cond) -> None:
@@ -65,7 +71,9 @@ def enrich(course: dict, places: dict[int, dict], cond) -> None:
             nxt = places.get(d["items"][k + 1]["place_id"]) if k + 1 < len(d["items"]) else None
             # 비 오는 날 야외 장소로 가거나 나오는 도보 구간은 짧아도 택시를 먼저 권한다
             wet = rainy(d.get("rain_prob")) and (is_outdoor(p) or bool(nxt and is_outdoor(nxt)))
-            if leg and leg["mode"] == "walk" and (wet or leg["minutes"] > config()["course"]["walk_taxi_hint_min"]):
+            c = config()["course"]  # 택시 제안: 도보 10분 이상, 비 오는 날 야외 장소 앞뒤는 5분 넘으면 (5분 이하는 제안 없음)
+            if leg and leg["mode"] == "walk" and (leg["minutes"] >= c["walk_taxi_hint_min"]
+                                                  or (wet and leg["minutes"] > c["walk_no_taxi_max_min"])):
                 taxi = config()["travel"]["speed_kmh"]["taxi"]
                 leg["taxi_hint_min"] = max(1, round((leg.get("meters") or 0) / 1000 / taxi * 60))
                 leg["rain_taxi"] = wet

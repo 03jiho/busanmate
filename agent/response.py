@@ -118,8 +118,37 @@ def fallback_line(p: dict) -> str:
     return f"{addr}에 있는 {p['category']}입니다."
 
 
-def rule_summary(course: dict | None, names: list[str], dates: list | None = None) -> str:
-    """LLM이 실패했을 때의 요약: 장소 순서와 이동 방법을 코드로 쓴다 (DB 이름만 쓰므로 근거는 그대로 DB)."""
+# 요약에 요청 조건(날씨·테마·지역·동선)이 들어갔는지 볼 낱말. 테마·지역 이름은 요청에서 더한다
+_COND_WORDS = re.compile(r"비 |비가|비 예보|강수|맑|날씨|우산|실내|야외|걸어|도보|택시|동선|이동|가까|산책")
+
+
+def mentions_condition(answer: str, cond) -> bool:
+    """요약이 날씨·테마·지역·동선 특징 중 하나 이상을 말하는가."""
+    words = [getattr(cond, "theme", None)] + [g[:-1] if len(g) >= 3 else g for g in getattr(cond, "gu", None) or []]  # 해운대구→해운대, 중구는 그대로
+    return bool(_COND_WORDS.search(answer)) or any(w and w in answer for w in words)
+
+
+def condition_line(course: dict, cond) -> str:
+    """규칙 기반 요약의 조건 한 줄: 테마 · 지역 · 날씨(일차별 강수확률) · 이동."""
+    parts = []
+    if getattr(cond, "theme", None):
+        parts.append(f"'{cond.theme}' 테마")
+    if getattr(cond, "gu", None):
+        parts.append(f"{', '.join(cond.gu)} 안에서")
+    rain = [(d["day"], d["rain_prob"]) for d in course["days"] if d.get("rain_prob") is not None]
+    if rain:
+        parts.append(", ".join(f"{n}일차 강수확률 {r:.0f}%" if len(course["days"]) > 1 else f"강수확률 {r:.0f}%"
+                               for n, r in rain))
+    legs = [i["leg_to_next"] for d in course["days"] for i in d["items"] if i.get("leg_to_next")]
+    walk = sum(lg["mode"] == "walk" for lg in legs)
+    if legs:
+        parts.append("걸어서 잇는 구간이 많은 동선" if walk * 2 >= len(legs) else "택시로 잇는 구간이 많은 동선")
+    return "조건: " + " · ".join(parts) + "." if parts else ""
+
+
+def rule_summary(course: dict | None, names: list[str], dates: list | None = None, cond=None) -> str:
+    """LLM이 실패했을 때의 요약: 장소 순서와 이동 방법을 코드로 쓴다 (DB 이름만 쓰므로 근거는 그대로 DB).
+    코스면 맞춘 조건(테마·지역·날씨·동선) 한 줄을 붙인다."""
     if not course:
         return f"조건에 맞는 장소 {len(names)}곳을 찾았습니다: {', '.join(names)}."
     lines = []
@@ -131,6 +160,8 @@ def rule_summary(course: dict | None, names: list[str], dates: list | None = Non
         head = f"{d['day']}일차 {when}" if len(course["days"]) > 1 else when
         lines.append(f"{head}코스: {' → '.join(i['name'] for i in d['items'])} (장소 {len(d['items'])}곳"
                      + (f", {how})" if how else ")"))
+    if line := condition_line(course, cond):
+        lines.append(line)
     return "\n\n".join(lines)
 
 
@@ -166,6 +197,7 @@ def build_response(state: dict) -> dict:
                     "summary": (places[i]["description"] or "")[:120]} for i in ids],
         "course": [{"day": d["day"], "order": [i["place_id"] for i in d["items"]]} for d in course["days"]] if course else None,
         "weather": state.get("rain_by_day"),
+        "conditions": {k: getattr(state.get("conditions"), k, None) for k in ("theme", "gu", "mode", "indoor", "companion")},
         "festivals": [f["name"] for f in state.get("festivals") or []],
     }
     try:
@@ -184,9 +216,12 @@ def build_response(state: dict) -> dict:
                 reasons[r["place_id"]], dropped = text, dropped + bad
         if dropped:
             log.warning("verify_places 제거 id=%s", dropped)  # ERR-007
+        if course and not mentions_condition(answer, state.get("conditions")):  # 조건 없는 요약 → 규칙 기반으로
+            STATS["summary_no_condition"] += 1
+            answer = rule_summary(course, [places[i]["name"] for i in ids], state.get("dates"), state.get("conditions"))
     except Exception as e:
         fallback("response", e)  # 원인·본문 앞부분(키는 가림)을 로그와 집계에. 질의 원문은 남기지 않는다 (SDD §8)
-        answer = rule_summary(course, [places[i]["name"] for i in ids], state.get("dates"))
+        answer = rule_summary(course, [places[i]["name"] for i in ids], state.get("dates"), state.get("conditions"))
         # 추천 이유는 DB 설명의 첫 줄(공공데이터 장소 소개 문구)로 대신한다. 근거는 여전히 DB뿐이다 (AI-REQ-01·02)
         reasons = {i: intro_line(places[i]) for i in ids}
         notices.append(FALLBACK_NOTICE)

@@ -300,11 +300,17 @@ def test_indoor_edit_replaces_one_outdoor_in_place(two_days, monkeypatch):
     assert not next(c for c in CANDS + INDOOR if c["place_id"] == before[d][k])["indoor"]
 
 
-def test_shorter_edit_removes_one_and_keeps_order(two_days):
+def test_shorter_edit_scales_stay_then_removes(two_days):
+    """'더 짧게': 먼저 그날 장소별 체류 시간을 비율로 줄이고(장소·순서 그대로), 모두 하한이면 한 곳을 뺀다."""
     sid, first = two_days
     r = orchestrator.handle_chat(sid, "더 짧게", today=TODAY, edit={"kind": "shorter"})
+    assert _ids(r) == _ids(first) and any("체류 시간" in n for n in r["notices"])
+    stays = lambda res: [i["stay_min"] for d in res["course"]["days"] for i in d["items"]]  # noqa: E731
+    assert sum(stays(r)) < sum(stays(first))
+    for _ in range(8):  # 하한(20분)까지 줄인 뒤에는 한 곳을 뺀다
+        r = orchestrator.handle_chat(sid, "더 짧게", today=TODAY, edit={"kind": "shorter"})
     before, after = _ids(first), _ids(r)
-    assert len(after) == 2 and sum(map(len, before)) - sum(map(len, after)) == 1
+    assert sum(map(len, before)) - sum(map(len, after)) >= 1
     for b, a in zip(before, after):
         assert [i for i in b if i in a] == a  # 남은 장소 순서 그대로
 
@@ -494,3 +500,54 @@ def test_reason_grounding():
             "description": "브레드 공방\n대표 메뉴: 커피, 케이크\n갓 구운 빵과 커피를 파는 동네 빵집이다."}
     assert response.grounded("갓 구운 빵과 커피를 즐길 수 있는 곳", cafe)
     assert not response.grounded("최상급 한우를 숙성해 내는 스테이크", cafe)
+
+
+def test_summary_must_mention_a_condition():
+    from services.search import Conditions as C
+    cond = C(query="x", theme="바다", gu=["해운대구"])
+    assert response.mentions_condition("해운대 바다를 따라 걷는 하루예요.", cond)
+    assert response.mentions_condition("비 예보가 있어 실내 위주로 짰어요.", C(query="x"))
+    assert not response.mentions_condition("멋진 곳들을 차례로 둘러보는 일정입니다.", C(query="x", gu=["중구"]))
+    course = {"days": [{"day": 1, "rain_prob": 20, "items": [
+        {"name": "가", "leg_to_next": {"mode": "walk", "minutes": 5}}, {"name": "나", "leg_to_next": None}]}]}
+    text = response.rule_summary(course, ["가", "나"], None, cond)
+    assert "'바다' 테마" in text and "강수확률 20%" in text and "걸어서" in text
+
+
+def test_why_lists_concrete_conditions_or_nothing():
+    from agent.explain import why
+    from services.search import Conditions as C
+    p = {"place_id": 1, "name": "해운대", "category": "해변", "gu": "해운대구", "lat": 35.158, "lng": 129.16, "indoor": False}
+    got = why(p, C(query="x", theme="바다", gu=["해운대구"]), 10, 600, None, set())
+    assert "요청한 지역(해운대구)" in got and any("바다" in w for w in got) and any("야외" in w for w in got)
+    museum = {**p, "category": "문화시설", "gu": "중구", "indoor": True}
+    assert why(museum, C(query="x"), None, 600, None, set()) == []  # 맞은 조건이 없으면 '왜 이곳?' 생략
+
+
+@pytest.mark.parametrize("minutes, rain, hint", [(4, 80, False), (7, 80, True), (7, 10, False), (12, 10, True)])
+def test_taxi_hint_thresholds(minutes, rain, hint):
+    """택시 제안: 도보 10분 이상, 비 오는 날 야외 장소 앞뒤는 5분 넘으면. 5분 이하는 제안 없음. 늘어나는 택시비 합계."""
+    from agent.explain import enrich
+    from services.search import Conditions as C
+    beach = {"place_id": 1, "name": "해운대", "category": "해변", "gu": "해운대구", "lat": 35.158, "lng": 129.16,
+             "indoor": False, "license": "x", "description": ""}
+    museum = {**beach, "place_id": 2, "name": "전시관", "category": "문화시설", "indoor": True}
+    course = {"days": [{"day": 1, "rain_prob": rain, "start": "10:00", "items": [
+        {"place_id": 1, "category": "해변", "stay_min": 35,
+         "leg_to_next": {"mode": "walk", "minutes": minutes, "meters": minutes * 70}},
+        {"place_id": 2, "category": "문화시설", "stay_min": 75, "leg_to_next": None}]}]}
+    enrich(course, {1: beach, 2: museum}, C(query="x"))
+    assert bool(course["days"][0]["items"][0]["leg_to_next"].get("taxi_hint_min")) is hint
+    b = course["budget"]
+    assert b["taxi_hint_legs"] == int(hint) and (b["taxi_hint_extra"] > 0) is hint
+
+
+def test_alternatives_skip_far_detours(fake, monkeypatch):
+    """'다른 곳으로 교체' 후보는 우회 거리가 alt_max_detour_km 안인 곳만 (다른 구로 35km 돌아가는 후보 금지)."""
+    from agent import course_ops
+    sid, r = _course_session(fake)
+    cur = r["course"]["days"][0]["items"][1]
+    far = {**cur, "place_id": 950, "name": "먼곳", "lat": cur["lat"] + 0.3, "lng": cur["lng"] + 0.3}
+    near = {**cur, "place_id": 951, "name": "가까운곳", "lat": cur["lat"] + 0.001}
+    monkeypatch.setattr(course_ops, "places_where", lambda category=None, indoor=None: [far, near])
+    assert [a["place_id"] for a in course_ops.alternatives(sid, 1, 1)] == [951]

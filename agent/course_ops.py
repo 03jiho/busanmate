@@ -56,9 +56,10 @@ def apply_order(session_id: str, days: list[list[int]]) -> dict:
     if any(same_place(a, b) for n, a in enumerate(rows) for b in rows[n + 1:]):
         raise EditError("같은 장소(이름이 같거나 같은 자리)가 두 번 들어갈 수 없어요.")
     reasons = {i["place_id"]: i.get("reason") for d in old["days"] for i in d["items"]}
+    stays = {i["place_id"]: i["stay_min"] for d in old["days"] for i in d["items"] if i.get("stay_min")}  # '더 짧게' 유지
     new_days = []
     for d_old, day_ids in zip(old["days"], days):
-        items = items_for([places[i] for i in day_ids], cond.mode)  # 순서는 그대로, 이동 시간만 다시
+        items = items_for([{**places[i], "stay_min": stays.get(i)} for i in day_ids], cond.mode)  # 순서는 그대로
         for it in items:
             it["reason"] = reasons.get(it["place_id"]) or intro_line(places[it["place_id"]]) \
                 or fallback_line(places[it["place_id"]])
@@ -86,8 +87,10 @@ def alternatives(session_id: str, day: int, index: int, n: int = 3) -> list[dict
         return detour_km(prev, p, nxt) if (prev or nxt) else detour_km(cur, p, None)
     others = [i for d in course["days"] for i in d["items"] if i is not cur]
     # 코스에 이미 있는 곳과 같은 장소(원천 중복: 공백만 다른 같은 이름, 같은 좌표)는 후보에서 뺀다
+    cap = config()["course"]["alt_max_detour_km"]  # 다른 구로 30km 넘게 돌아가는 후보는 내지 않는다
     rows = sorted((p for p in places_where(category=cur["category"])
-                   if p["place_id"] not in used and not any(same_place(p, q) for q in others)), key=extra)
+                   if p["place_id"] not in used and not any(same_place(p, q) for q in others) and extra(p) <= cap),
+                  key=extra)
     return [{"place_id": p["place_id"], "name": p["name"], "category": p["category"], "gu": p["gu"],
              "extra_km": round(extra(p), 1), "intro": intro_line(p) or fallback_line(p)} for p in rows[:n]]
 

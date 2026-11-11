@@ -232,7 +232,8 @@ def put_course(session_id: str, body: OrderIn):
 def get_alternatives(session_id: str, day: int, index: int):
     """'다른 곳으로 교체' 후보 3곳(같은 분류, 동선상 덜 돌아가는 순)."""
     _check_session(session_id)
-    return {"alternatives": _edit(course_ops.alternatives, session_id, day, index)}
+    return {"alternatives": _edit(course_ops.alternatives, session_id, day, index),
+            "max_detour_km": config()["course"]["alt_max_detour_km"]}
 
 
 @app.post("/api/session/{session_id}/share")

@@ -134,11 +134,11 @@ def meals_ok(seq) -> bool:
 def lunch_ok(seq, mode: str, start: str | None = None) -> bool:
     """점심 시간대(lunch_window)에 도착하는 식당이 있다."""
     lo, hi = map(_minutes, config()["course"]["lunch_window"])
-    t, stay = _minutes(start or config()["course"]["day_start"]), config()["course"]["default_stay_min"]
+    t = _minutes(start or config()["course"]["day_start"])
     for a, b in zip(seq, list(seq[1:]) + [None]):
         if a["category"] == _food() and lo <= t <= hi:
             return True
-        t += (a.get("stay_min") or stay) + (estimate_leg(a, b, mode)["minutes"] if b else 0)
+        t += stay_min(a) + (estimate_leg(a, b, mode)["minutes"] if b else 0)
     return False
 
 
@@ -146,20 +146,32 @@ def slots_ok(seq, mode: str, start: str | None = None) -> bool:
     """식당은 점심(lunch_window)·저녁(dinner_window) 시간대에 도착할 때만 둔다. 그래서 첫 장소(10:00)는 식당이 아니다."""
     c = config()["course"]
     windows = [tuple(map(_minutes, c[w])) for w in ("lunch_window", "dinner_window")]
-    t, stay = _minutes(start or c["day_start"]), c["default_stay_min"]
+    t = _minutes(start or c["day_start"])
     for a, b in zip(seq, list(seq[1:]) + [None]):
         if a["category"] == _food() and not any(lo <= t <= hi for lo, hi in windows):
             return False
-        t += (a.get("stay_min") or stay) + (estimate_leg(a, b, mode)["minutes"] if b else 0)
+        t += stay_min(a) + (estimate_leg(a, b, mode)["minutes"] if b else 0)
     return True
+
+
+def stay_of(p: dict) -> int:
+    """분류·이름별 기본 체류 시간(분): 이름 키워드(미술관·박물관·전망대) > 분류 표 > default_stay_min."""
+    c = config()["course"]
+    named = [m for kw, m in (c.get("stay_min_by_name") or {}).items() if kw in (p.get("name") or "")]
+    return named[0] if named else (c.get("stay_min_by_category") or {}).get(p.get("category"), c["default_stay_min"])
+
+
+def stay_min(p: dict) -> int:
+    """코스 항목에 정해진 체류 시간(더 짧게로 줄였을 수 있음), 없으면 기본값."""
+    return p.get("stay_min") or stay_of(p)
 
 
 def rain_cost(seq, mode: str, pop: dict[int, int], start: str | None = None) -> int:
     """야외 장소에 머무는 시간대의 강수확률 합(시 단위 최댓값). 비 오는 날 순서를 정할 때 작을수록 좋다."""
     c = config()["course"]
-    t, stay, total = _minutes(start or c["day_start"]), c["default_stay_min"], 0
+    t, total = _minutes(start or c["day_start"]), 0
     for a, b in zip(seq, list(seq[1:]) + [None]):
-        s = a.get("stay_min") or stay
+        s = stay_min(a)
         if is_outdoor(a):
             total += max(pop.get(h, 0) for h in range(t // 60, (t + s) // 60 + 1))
         t += s + (estimate_leg(a, b, mode)["minutes"] if b else 0)
@@ -169,7 +181,7 @@ def rain_cost(seq, mode: str, pop: dict[int, int], start: str | None = None) -> 
 def needs_lunch(seq) -> bool:
     """하루 체류 합이 lunch_min_stay_min(5시간) 이상이면 점심 식당이 필요하다."""
     c = config()["course"]
-    return sum(p.get("stay_min") or c["default_stay_min"] for p in seq) >= c["lunch_min_stay_min"]
+    return sum(map(stay_min, seq)) >= c["lunch_min_stay_min"]
 
 
 def best_order(places: list[dict], check_variety: bool, meals: bool = False,
@@ -191,14 +203,15 @@ def best_order(places: list[dict], check_variety: bool, meals: bool = False,
         d = path_km(perm)
         if rain:
             d += config()["weather"]["rain_hour_weight_km"] * rain_cost(perm, rain[0], rain[1]) / 100
+            if is_outdoor(perm[0]) and not all(map(is_outdoor, perm)):  # 가능하면 실내로 시작
+                d += config()["weather"]["rain_first_outdoor_km"]
         if best is None or d < best[0]:
             best = (d, list(perm))
     return best[1] if best else None
 
 
 def day_minutes(seq: list[dict], mode: str) -> int:
-    stay = config()["course"]["default_stay_min"]
-    return stay * len(seq) + sum(estimate_leg(a, b, mode)["minutes"] for a, b in zip(seq, seq[1:]))
+    return sum(map(stay_min, seq)) + sum(estimate_leg(a, b, mode)["minutes"] for a, b in zip(seq, seq[1:]))
 
 
 def plan_day(scored: list[dict], k: int, hours: float, mode: str, check_variety: bool,
@@ -207,7 +220,7 @@ def plan_day(scored: list[dict], k: int, hours: float, mode: str, check_variety:
              rain_hours: dict[int, int] | None = None) -> tuple[list[dict], list[str]]:
     """K곳을 고르고 순서를 정한다. 가용 시간을 넘으면 최저 점수 장소를 빼고 다시 정한다."""
     # 비 오는 날 시간별 예보가 있으면 야외 장소를 강수확률이 낮은 시간대에 (순서 비용에 반영)
-    order = partial(best_order, rain=(mode, rain_hours) if rain_hours else None)
+    order = partial(best_order, rain=(mode, rain_hours) if rain_hours is not None else None)
     c = config()["course"]
     min_k, notices = c["places_per_day_min"], []
     # 하루 동선이 흩어지지 않게 기준 장소 반경 안에서만 고른다.
@@ -360,7 +373,7 @@ def arrivals(items: list[dict], start: str | None = None) -> list[tuple[int, int
     """장소별 (도착, 출발) 분. 출발 시각 + 체류 + 구간 이동 (화면의 방문 예정 시각과 같은 계산)."""
     t, out = _minutes(start or config()["course"]["day_start"]), []
     for i in items:
-        leave = t + (i.get("stay_min") or config()["course"]["default_stay_min"])
+        leave = t + stay_min(i)
         out.append((t, leave))
         t = leave + (i["leg_to_next"]["minutes"] if i.get("leg_to_next") else 0)
     return out
@@ -406,7 +419,7 @@ def detour_km(prev: dict | None, p: dict, nxt: dict | None) -> float:
 def removal_saving(items: list[dict], i: int, mode: str) -> int:
     """i번째 장소를 빼면 줄어드는 분(체류 + 앞뒤 구간 - 새로 생기는 구간)."""
     prev, nxt = items[i - 1] if i > 0 else None, items[i + 1] if i + 1 < len(items) else None
-    saved = items[i].get("stay_min") or config()["course"]["default_stay_min"]
+    saved = stay_min(items[i])
     saved += sum(estimate_leg(a, b, mode)["minutes"] for a, b in ((prev, items[i]), (items[i], nxt)) if a and b)
     return saved - (estimate_leg(prev, nxt, mode)["minutes"] if prev and nxt else 0)
 
@@ -414,7 +427,7 @@ def removal_saving(items: list[dict], i: int, mode: str) -> int:
 def items_for(seq: list[dict], mode: str) -> list[dict]:
     return [{"order": i + 1, "place_id": p["place_id"], "name": p["name"], "category": p["category"],
              "gu": p["gu"], "lat": p["lat"], "lng": p["lng"], "reason": None,
-             "stay_min": config()["course"]["default_stay_min"],
+             "stay_min": stay_min(p),
              "leg_to_next": estimate_leg(p, seq[i + 1], mode) if i + 1 < len(seq) else None}
             for i, p in enumerate(seq)]
 
@@ -509,7 +522,7 @@ def build_course(cands: list[dict], cond, rain_by_day: list[float | None] | None
         seq, n = plan_day(sc(group, rain[d]), min(k, len(group)), hours, cond.mode, check_variety, food_cap, meals,
                           lunch_pool=[p for p in sc(cands) if p["place_id"] not in others],
                           outdoor_cap=config()["weather"]["rain_outdoor_max"] if rainy(rain[d]) else None,
-                          rain_hours=rain_hours[d] if rainy(rain[d]) else None)
+                          rain_hours=(rain_hours[d] or {}) if rainy(rain[d]) else None)  # 시간별 예보가 없어도 실내로 시작
         used |= {p["place_id"] for p in seq}
         notices += [f"{d + 1}일차: {m}" if days > 1 else m for m in n]
         if rain[d] is not None and rain[d] >= config()["weather"]["rain_prob_threshold"]:

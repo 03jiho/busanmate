@@ -16,6 +16,7 @@ from services.planner import (
     meals_ok,
     rainy,
     removal_saving,
+    stay_min,
 )
 from services.search import fetch_places, places_where, search, theme_points
 from settings import config
@@ -93,7 +94,7 @@ class EditCourse(BaseTool):
     name = "edit_course"
     description = ("직전 코스를 제자리에서 고친다: 장소 하나를 교체·추가·삭제하고, 나머지 장소·순서·일차 구조는 그대로 둔 채 "
                    "이동 시간만 다시 계산한다. kind=cafe(점심 무렵에 카페 추가), indoor(실외 한 곳을 실내로), "
-                   "shorter(한 곳을 빼서 짧게).")
+                   "shorter(장소별 체류 시간을 줄여 짧게, 이미 최소면 한 곳을 뺀다).")
     args_schema = {"type": "object", "properties": {
         "op": {"type": "string", "enum": ["replace", "add", "remove"]},
         "kind": {"type": "string", "enum": ["cafe", "indoor", "shorter"]},
@@ -125,7 +126,17 @@ class EditCourse(BaseTool):
         def fail(msg):
             return ToolResult(ok=False, notices=[msg], data={"error": msg})
 
-        if op == "remove":
+        shrunk = None
+        if kind == "shorter" and not 0 <= idx < len(items):  # 더 짧게: 먼저 장소별 체류 시간을 비율로 줄인다
+            new = [max(c["min_stay_min"], 5 * round(stay_min(i) * c["shorter_ratio"] / 5)) for i in items]
+            saved = sum(map(stay_min, items)) - sum(new)
+            if saved > 0:
+                items = [{**i, "stay_min": n} for i, n in zip(items, new)]
+                shrunk = (f"{day_no}일차 장소별 체류 시간을 {round((1 - c['shorter_ratio']) * 100)}%씩 줄여 "
+                          f"약 {saved}분 짧게 했어요.")
+        if shrunk:
+            note = shrunk
+        elif op == "remove":  # 체류 시간이 모두 하한이거나 몇 번째를 빼라고 했으면 한 곳을 뺀다
             if len(items) <= c["places_per_day_min"]:
                 return fail("하루 최소 장소 수라 더 뺄 수 없습니다.")
             if not 0 <= idx < len(items):  # 몇 번째인지 안 정했으면 빼서 가장 많이 줄어드는 곳 (식당·카페가 붙지 않게)

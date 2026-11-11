@@ -77,6 +77,11 @@ h1 {{font-size: 1.6rem !important; font-weight: 700 !important; letter-spacing: 
 .est {{border-bottom: 1px dotted #8a857c; cursor: help;}}
 .umb {{display: inline-block; font-size: .75rem; color: #1d5fa7; background: #f2f7fc;
   border: 1px solid #b9cfe8; border-radius: 999px; padding: .05rem .55rem; margin: .1rem 0 .2rem;}}
+[class*="st-key-card"] [data-testid="stImage"] img {{aspect-ratio: 4 / 3; object-fit: cover; border-radius: 6px;}}
+.ph {{aspect-ratio: 4 / 3; width: 100%; border-radius: 6px; background: #eeece7; color: #8a857c;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .15rem;}}
+.ph .ico {{font-size: 1.6rem; line-height: 1; filter: grayscale(1); opacity: .7;}}
+.ph .txt {{font-size: .7rem;}}
 .footer {{color: #8a857c; font-size: .75rem; line-height: 1.6; border-top: 1px solid #e3e0d8;
   padding-top: .8rem; margin-top: 2rem;}}
 </style>"""
@@ -214,16 +219,25 @@ def photo_line(s: dict, image: dict) -> str:
     return f"사진 출처: {s['label']} · [원본 이미지]({image['url']}) · {image.get('license') or '이용 조건 정보 없음'}"
 
 
+# 사진 없는 카드의 자리표시 아이콘 (분류별)
+CATEGORY_ICON = {"해변": "🏖️", "공원·자연": "🌳", "문화시설": "🏛️", "관광지": "📍", "카페": "☕", "음식점": "🍽️",
+                 "시장": "🛍️", "거리·마을": "🏘️", "사찰·종교": "🛕"}
+
+
 def place_card(key: str, title: str, sub: str, reason: str | None, source: dict | None,
-               why: list[str] | None = None, edit: tuple | None = None, umbrella: bool = False) -> None:
+               why: list[str] | None = None, edit: tuple | None = None, umbrella: bool = False,
+               category: str | None = None) -> None:
     """장소 카드: 이름, 시각·분류, 추천 이유, 왜 이곳?(요청 조건과 맞은 항목), 썸네일, 출처·원본 링크·이용 조건 (FR-003).
     edit=(r, day, index)이면 빼기·다른 곳으로 교체 버튼을 붙인다(채팅을 거치지 않는 직접 편집)."""
     with st.container(border=True, key=key):
         image = (source or {}).get("image")
-        body = st
+        thumb, body = st.columns([1, 3], vertical_alignment="top")  # 사진이 없어도 같은 자리·높이(4:3)
         if image:
-            thumb, body = st.columns([1, 3], vertical_alignment="top")
             thumb.image(image["url"], use_container_width=True)
+        else:
+            icon = CATEGORY_ICON.get(category or "", "📍")
+            thumb.markdown(f"<div class='ph' role='img' aria-label='사진 없음'><span class='ico'>{icon}</span>"
+                           "<span class='txt'>사진 없음</span></div>", unsafe_allow_html=True)
         body.markdown(f"**{title}**  \n:gray[{sub}]")
         if reason:
             body.write(reason)
@@ -253,7 +267,8 @@ def place_card(key: str, title: str, sub: str, reason: str | None, source: dict 
                               help=alt["intro"], use_container_width=True,
                               on_click=replace_place, args=(r, day, index, alt["place_id"]))
                 if alts.get("alternatives") == []:
-                    st.caption("같은 분류의 다른 후보가 없어요.")
+                    st.caption(f"근처(우회 {alts.get('max_detour_km', 8)}km 안)에 같은 분류의 다른 후보가 없어요. "
+                               "빼기를 눌러 보세요.")
 
 
 def _apply(r: dict, days: list[list[int]]) -> None:
@@ -323,6 +338,9 @@ def budget_box(course: dict) -> None:
                      "요금(없으면 부산 택시 요금표: 기본 4,800원·2km, 132m당 100원)으로 계산해요.")
     if len(b["days"]) > 1:
         st.caption(" / ".join(f"{d['day']}일차 {d['total']:,}원" for d in b["days"]))
+    if b.get("taxi_hint_legs"):
+        st.caption(f"택시 추천 구간 {b['taxi_hint_legs']}곳까지 택시로 가면 택시비가 도보 위주보다 약 "
+                   f"{b['taxi_hint_extra']:,}원 늘어요(택시비 합계 약 {b['taxi'] + b['taxi_hint_extra']:,}원).")
     budget = ss.get("budget") or 0
     if budget and b["total"] > budget:
         st.warning(f"예산 {budget:,}원보다 {b['total'] - budget:,}원 많아요. '더 짧게'를 누르거나 택시 구간을 줄여 보세요.")
@@ -373,7 +391,7 @@ def show_photo_result(r: dict, key: str) -> None:
     with right:
         for m, k in zip(items, keys):
             place_card(k, f"{m['order']}. {m['name']}", f"{m['category']} · {m['gu']} · 유사도 {m['similarity']:.0%}",
-                       None, by_place.get(m["place_id"]))
+                       None, by_place.get(m["place_id"]), category=m["category"])
             st.button("코스에 넣기", key=f"add-{k}", on_click=ask, args=(f"{m['name']}을(를) 코스에 추가해줘",))
 
 
@@ -422,13 +440,13 @@ def show_result(r: dict, key: str, latest: bool = False, stream: bool = False, r
                         place_card(k, f"{i['order']}. {i['name']}",
                                    f"{arrive}–{leave} · 체류 {hm(i.get('stay_min') or 60)} · {i['category']}{price}",
                                    i.get("reason"), by_place.get(i["place_id"]), i.get("why"),
-                                   (r, d["day"], n) if editable else None, bool(i.get("umbrella")))
+                                   (r, d["day"], n) if editable else None, bool(i.get("umbrella")), i["category"])
                         if leg := i.get("leg_to_next"):  # 지도 선과 같은 모양: 도보 점선, 택시 실선
                             tip = html.escape(basis, quote=True)
                             text = html.escape(leg_text(leg)).replace("(예상)", f"<span class='est' title='{tip}'>(예상)</span>")
                             if leg.get("rain_taxi"):  # 비 오는 날 야외 장소 앞뒤 구간
                                 text += f" · 비 예보가 있어 택시 추천(약 {leg['taxi_hint_min']}분)"
-                            elif leg.get("taxi_hint_min"):  # 걸어서 15분이 넘는 구간
+                            elif leg.get("taxi_hint_min"):  # 걸어서 10분 이상인 구간
                                 text += f" · 택시를 타면 약 {leg['taxi_hint_min']}분"
                             st.markdown(f"<div class='leg {leg['mode']}'>{text}</div>", unsafe_allow_html=True)
                 if editable and len(d["items"]) > 1:  # 드래그로 순서 바꾸기 → 이동 시간·시각 바로 다시 계산
@@ -440,7 +458,7 @@ def show_result(r: dict, key: str, latest: bool = False, stream: bool = False, r
                             st.rerun()
     for n, p in enumerate(r.get("places") or []):
         place_card(f"card-{key}-s-{n}", p["name"], f"{p['category']} · {p['gu']}", p.get("reason"),
-                   by_place.get(p["place_id"]))
+                   by_place.get(p["place_id"]), category=p["category"])
     others = [s for s in r.get("sources") or [] if "place_id" not in s]  # 기상청·축제 등
     for s in others:
         st.caption(source_line(s))

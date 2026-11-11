@@ -212,9 +212,9 @@ def test_short_day_does_not_force_lunch():  # 반나절(체류 3시간)은 점�
 
 
 def test_meal_rule_functions():
-    a, f, c = ({"category": x, "lat": 35.1, "lng": 129.03, "gu": "중구"} for x in ("해변", "음식점", "카페"))
+    a, f, c = ({"category": x, "lat": 35.1, "lng": 129.03, "gu": "중구"} for x in ("관광지", "음식점", "카페"))
     assert meals_ok([a, f, a, c]) and not meals_ok([a, f, c]) and not meals_ok([c, f])
-    # 10:00 해변(60분) → 이동 → 11시 무렵 음식점: 11:30 전 도착이면 점심이 아니다
+    # 10:00 관광지(60분) → 이동 → 11시 무렵 음식점: 11:30 전 도착이면 점심이 아니다
     assert not lunch_ok([a, f], "auto") and lunch_ok([a, a, f], "auto")
 
 
@@ -363,3 +363,22 @@ def test_rainy_outdoor_goes_to_driest_hour():
     day = build_course(museums + [beach], Conditions(query="x", mode="walk"), [80], rain_hours_by_day=[wet_morning])["days"][0]
     times = dict(zip([i["place_id"] for i in day["items"]], [a for a, _ in arrivals(day["items"], day["start"])]))
     assert times[9] >= 13 * 60  # 강수확률 낮은 오후
+
+
+def test_stay_minutes_by_category_and_name():
+    from services.planner import stay_of
+    assert stay_of({"name": "해운대", "category": "해변"}) == 35
+    assert stay_of({"name": "부산시립미술관", "category": "문화시설"}) == 90
+    assert stay_of({"name": "KF아세안문화원", "category": "문화시설"}) == 75
+    assert stay_of({"name": "황령산 전망대", "category": "공원·자연"}) == 40
+    assert stay_of({"name": "어딘가", "category": "카페"}) == 40
+
+
+def test_rainy_day_starts_indoors_when_possible():
+    """비 오는 날(시간별 예보 없어도): 실내 장소가 있으면 첫 장소는 실내."""
+    m = [{"place_id": i, "name": f"실내{i}", "category": c, "gu": "중구", "lat": 35.100 + i * 0.002, "lng": 129.030,
+          "indoor": True, "sim": 0.6} for i, c in enumerate(["문화시설", "시장", "관광지", "문화시설"])]
+    beach = {"place_id": 9, "name": "송도해수욕장", "category": "해변", "gu": "중구", "lat": 35.0995, "lng": 129.0295,
+             "indoor": False, "sim": 0.95}
+    items = build_course(m + [beach], Conditions(query="x", mode="walk"), [80])["days"][0]["items"]
+    assert 9 in {i["place_id"] for i in items} and items[0]["place_id"] != 9
