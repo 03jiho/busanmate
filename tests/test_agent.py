@@ -6,7 +6,7 @@ import pytest
 
 from agent import orchestrator, query_parser, response, session
 from agent.response import verify_places
-from services.llm import LLMReply, ToolCall
+from services.llm import FALLBACK_NOTICE, LLMReply, ToolCall
 from tools import map as map_tool
 from tools import places as places_tool
 from tools import weather
@@ -34,6 +34,9 @@ class FakeLLM:
         self.prompts.append(prompt)
         if "intent" in schema["properties"]:
             return self.parsed
+        if "steps" in schema["properties"]:  # 도구 선택(구조화 출력): 계획 한 번
+            calls = self.plan.pop(0) if self.plan else []
+            return {"steps": [{"name": n, **a} for n, a in calls]}
         return {"answer": "먼저 [[0]]에 갑니다. 이어서 [[999]]도 들릅니다. 마지막은 [[1]]입니다.",
                 "reasons": [{"place_id": 0, "reason": "바다가 보여요"}, {"place_id": 999, "reason": "가짜"}]}
 
@@ -146,8 +149,8 @@ def test_course_asks_for_missing_region_or_date(fake, parsed, expected):
 def test_tool_call_limit(fake):
     sid = str(uuid.uuid4())
     fake(FakeLLM({"intent": "course", "query": "바다", "gu": ["중구"], "start_date": "2026-11-07"},
-                 plan=[[("search_places", {})]] * 20))
-    assert len(chat(sid, "토요일 바다 코스")["tool_calls"]) == 6  # 마지막 단계에 닿지 않아도 6회에서 멈춘다
+                 plan=[[("search_places", {})] * 20]))
+    assert len(chat(sid, "토요일 바다 코스")["tool_calls"]) == 6  # 계획이 길어도 6회에서 멈춘다
 
 
 def test_search_stops_after_search_places(fake):
@@ -163,7 +166,8 @@ def test_llm_down_uses_rules_and_default_plan(fake):
     r = chat(sid, "해운대 바다 1박 여행 코스")
     assert r["conditions"]["gu"] == ["해운대구"] and r["conditions"]["days"] == 2
     assert r["tool_calls"][0] == "search_places" and "build_course" in r["tool_calls"]
-    assert r["course"]["days"] and any("AI" in n for n in r["notices"])
+    assert r["course"]["days"] and r["notices"].count(FALLBACK_NOTICE) == 1  # 내부 용어 없이 한 줄만
+    assert not any("AI" in n for n in r["notices"])
     items = r["course"]["days"][0]["items"]
     assert all(i["reason"] for i in items)  # LLM이 없어도 추천 이유는 DB 소개 문구로 채운다 (AC-002)
 
@@ -429,7 +433,9 @@ def test_similar_uses_context_category():
 
 @pytest.mark.parametrize("text, out", [
     ("짧은 설명", "짧은 설명"),
-    ("첫 문장이에요. 두 번째 문장은 꽤 길어서 한도를 넘깁니다. 세 번째.", "첫 문장이에요.…"),
+    ("첫 문장이에요. 두 번째 문장은 꽤 길어서 한도를 넘깁니다. 세 번째.", "첫 문장이에요."),   # 문장 끝에서 잘림: … 없음
+    ("띄어쓰기는 있지만 마침표 없이 아주 길게 이어지는 소개 문구라서 중간에서 잘립니다", "띄어쓰기는 있지만 마침표 없이 아주 길게 이어지는…"),
+    ("한 문장... 그리고 아주 길게 이어지는 두 번째 문장이 한도를 넘깁니다", "한 문장..."),  # 이미 말줄임표: 하나만
 ])
 def test_clip_by_sentence(text, out):
     assert response.clip(text, 30) == out
@@ -466,3 +472,16 @@ def test_rainy_day_adds_indoor_attractions_for_swap(fake, monkeypatch):
                  plan=[[("search_places", {}), ("get_weather", {}), ("build_course", {})], [("get_route_times", {})]]))
     items = chat(sid, "이번 토요일 중구 바다 코스")["course"]["days"][0]["items"]  # 가짜 예보: 강수 80%
     assert sum(i["category"] == "해변" for i in items) <= 2 and any(i["place_id"] >= 900 for i in items)
+
+
+def test_parser_steps_skip_separate_tool_call(fake):
+    """해석 단계 JSON에 도구 계획(steps)이 있으면 도구 선택 LLM을 따로 부르지 않는다 (왕복 1회 절약)."""
+    steps = [{"name": n} for n in ["search_places", "get_weather", "get_festivals", "build_course", "get_route_times"]]
+    llm = fake(FakeLLM({"intent": "course", "query": "바다", "gu": ["중구"], "start_date": "2026-11-07", "steps": steps}))
+    llm.json_schemas = []
+    orig = llm.json
+    llm.json = lambda system, prompt, schema, deadline=None: llm.json_schemas.append(list(schema["properties"])) or orig(
+        system, prompt, schema, deadline)
+    r = chat(str(uuid.uuid4()), "이번 토요일 바다 코스")
+    assert r["tool_calls"] == [s["name"] for s in steps] and r["course"]
+    assert not any(k == ["steps"] for k in llm.json_schemas)  # 도구 선택 전용 호출 없음

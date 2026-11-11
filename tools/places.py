@@ -4,7 +4,19 @@ import logging
 import re
 from dataclasses import replace
 
-from services.planner import arrivals, build_course, day_minutes, detour_km, eating, items_for, lunch_slot, meals_ok, rainy, removal_saving
+from services.planner import (
+    arrivals,
+    build_course,
+    day_minutes,
+    detour_km,
+    eating,
+    is_outdoor,
+    items_for,
+    lunch_slot,
+    meals_ok,
+    rainy,
+    removal_saving,
+)
 from services.search import fetch_places, places_where, search, theme_points
 from settings import config
 from tools.base import BaseTool, ToolResult, register
@@ -62,6 +74,14 @@ class BuildCourse(BaseTool):
             gu = set(ctx["conditions"].gu)
             cands = cands + [{**p, "sim": low} for p in places_where(indoor=True)
                              if p["place_id"] not in ids and not eating(p) and (not gu or p["gu"] in gu)]
+        gu = set(ctx["conditions"].gu)
+        # 한 분류로 쏠린 검색 결과(예: 문화시설만)에 섞을 후보: 같은 구의 카페·시장·산책·야외 명소를 유사도 최저값으로
+        if gu and not ctx["conditions"].categories:
+            ids, low = {p["place_id"] for p in cands}, min((p["sim"] for p in cands), default=0)
+            wet = any(rainy(r) for r in ctx.get("rain_by_day") or [])
+            cands = cands + [{**p, "sim": low} for cat in config()["course"]["mix_categories"]
+                             for p in places_where(category=cat)
+                             if p["place_id"] not in ids and p["gu"] in gu and not (wet and is_outdoor(p))]
         course = build_course(cands, ctx["conditions"], ctx.get("rain_by_day"), near)
         summary = [{"day": d["day"], "places": [i["name"] for i in d["items"]]} for d in course["days"]]
         return ToolResult(ok=bool(course["days"]), data={"days": summary}, notices=course["notices"],

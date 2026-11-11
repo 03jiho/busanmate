@@ -51,3 +51,10 @@ def register(cls):
 
 def declarations() -> list[dict]:
     return [{"name": t.name, "description": t.description, "parameters": t.args_schema} for t in REGISTRY.values()]
+
+
+def steps_schema() -> dict:
+    """도구 선택 구조화 출력: [{"name": 도구 이름, ...그 도구의 인자}] (실행 순서). 인자 칸은 등록된 도구의 args_schema를 합친다."""
+    args = {k: v for t in REGISTRY.values() for k, v in t.args_schema.get("properties", {}).items()}
+    return {"type": "array", "items": {"type": "object", "required": ["name"],
+                                       "properties": {"name": {"type": "string", "enum": list(REGISTRY)}, **args}}}

@@ -332,3 +332,21 @@ def test_multi_day_food_heavy_candidates_keep_each_day_full():
     days = build_course(food + sights, Conditions(query="x", days=3))["days"]
     assert len(days) == 3 and all(len(d["items"]) >= 4 for d in days)
     assert all(meals_ok(d["items"]) for d in days)
+
+
+def test_one_category_at_most_half_of_day():
+    """문화시설이 대부분인 후보: 한 분류는 하루 장소의 절반까지, 다른 분류가 섞인다(3연속 없음)."""
+    museums = [{"place_id": i, "name": f"전시관{i}", "category": "문화시설", "gu": "중구", "lat": 35.10 + i * 0.002,
+                "lng": 129.03, "indoor": True, "sim": 0.9 - i * 0.01} for i in range(8)]
+    others = [{"place_id": 50 + i, "name": f"기타{i}", "category": c, "gu": "중구", "lat": 35.101 + i * 0.002,
+               "lng": 129.031, "indoor": c != "공원·자연", "sim": 0.3} for i, c in enumerate(["시장", "거리·마을", "카페", "음식점"])]
+    day = build_course(museums + others, Conditions(query="x"))["days"][0]["items"]
+    n = sum(i["category"] == "문화시설" for i in day)
+    assert n <= len(day) // 2 and len(day) >= 4
+
+
+def test_category_overflow_explained_when_no_alternatives():
+    museums = [{"place_id": i, "name": f"전시관{i}", "category": "문화시설", "gu": "중구", "lat": 35.10 + i * 0.002,
+                "lng": 129.03, "indoor": True, "sim": 0.9 - i * 0.01} for i in range(6)]
+    course = build_course(museums, Conditions(query="x"))
+    assert any("다른 종류 후보가 부족" in n for n in course["notices"])

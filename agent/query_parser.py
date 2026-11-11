@@ -5,9 +5,10 @@ from datetime import date, timedelta
 
 from agent import prompt
 from agent.response import with_josa
-from services.llm import error_cause, get_llm
+from services.llm import FALLBACK_NOTICE, STATS, fallback, get_llm
 from services.search import Conditions, all_place_names, match_names
 from settings import config
+from tools.base import steps_schema
 
 log = logging.getLogger("agent")
 
@@ -47,6 +48,7 @@ def schema() -> dict:
         "edit": {"type": "object", "required": ["op"], "properties": {
             "op": {"type": "string", "enum": ["replace", "add", "remove"]},
             "day": {"type": "integer"}, "index": {"type": "integer"}, "spec": {"type": "string"}}},
+        "steps": steps_schema(),  # 도구 계획도 같은 호출에서 받아 LLM 왕복을 한 번 줄인다 (응답 시간 예산)
     }}
 
 
@@ -150,12 +152,13 @@ def parse(message: str, today: date, prefs: dict | None = None, has_course: bool
     """{"intent", "conditions": Conditions, "dates": [date], "clarify": 되물을 질문|None, "edit": dict|None, "notices"}.
     선호 설정은 질의에 없는 항목만 채운다(질의 우선, UC-006)."""
     prefs, notices = prefs or {}, []
+    STATS["parser_calls"] += 1
     try:
-        raw, fallback = _llm_parse(message, today, deadline), False
+        raw, used_rules = _llm_parse(message, today, deadline), False
     except Exception as e:
-        log.warning("parser LLM 실패 cause=%s %s", error_cause(e), type(e).__name__)
-        raw, fallback = _rule_parse(message, has_course), True
-        notices.append("AI가 질문을 해석하지 못해 간단한 규칙으로 조건을 읽었습니다.")
+        fallback("parser", e)
+        raw, used_rules = _rule_parse(message, has_course), True
+        notices.append(FALLBACK_NOTICE)
 
     intent = raw.get("intent", "search")
     if intent == "search" and raw.get("start_date") and re.search(r"코스|일정|하루|걸어서|여행|나들이", message):
@@ -175,7 +178,7 @@ def parse(message: str, today: date, prefs: dict | None = None, has_course: bool
         # "맛집 투어"를 분류 필터(음식점만)로 읽으면 하루 내내 식당만 나온다: 테마와 같은 분류는 테마로만 둔다.
         # "식당만", "카페만"처럼 '만'을 붙였을 때만 분류 필터로 쓴다.
         cond.categories = []
-    notices = resolve_places(raw.get("places") or [], cond, message if fallback else None) + notices
+    notices = resolve_places(raw.get("places") or [], cond, message if used_rules else None) + notices
 
     try:
         start = date.fromisoformat(raw["start_date"]) if raw.get("start_date") else None
@@ -183,7 +186,7 @@ def parse(message: str, today: date, prefs: dict | None = None, has_course: bool
         start = None
     clarify, edit = None, raw.get("edit") if intent == "edit" else None
     no_region = not cond.gu and not raw.get("region_any")  # "부산 전체", "어디든"이면 지역을 묻지 않는다
-    if intent == "course" and fallback and start is None:
+    if intent == "course" and used_rules and start is None:
         start = today
         notices.append("방문 날짜를 읽지 못해 오늘 기준으로 일정을 짰습니다.")
     elif intent == "course" and (start is None or no_region):
@@ -202,4 +205,4 @@ def parse(message: str, today: date, prefs: dict | None = None, has_course: bool
         intent = "search"
     dates = [start + timedelta(days=i) for i in range(min(cond.days, config()["course"]["max_days"]))] if start else []
     return {"intent": intent, "conditions": cond, "dates": dates, "clarify": clarify, "edit": edit, "notices": notices,
-            "suggest": suggest}
+            "suggest": suggest, "steps": None if used_rules else raw.get("steps")}

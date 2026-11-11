@@ -4,8 +4,10 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Protocol
@@ -17,6 +19,11 @@ from settings import config, secret
 
 log = logging.getLogger("llm")
 STATS: Counter = Counter()  # 호출·대체 횟수 (프로세스 메모리, /api/health에 노출). ponytail: 재시작하면 0, 오래 보려면 DB로
+# LLM을 못 써서 규칙 기반으로 대신했을 때 사용자에게 보이는 유일한 안내 (내부 용어 없이 한 줄)
+FALLBACK_NOTICE = "추천 이유를 간단히 표시했어요."
+# 호출은 스레드에서 하고 질문 예산만큼만 기다린다(Gemini의 최소 기한 10초와 무관하게 예산을 지킨다).
+# ponytail: 기다림을 포기한 호출은 HTTP 기한까지 스레드에 남는다, 동시 요청이 많아지면 async 클라이언트로
+_POOL = ThreadPoolExecutor(max_workers=8)
 
 
 class BudgetExceeded(TimeoutError):
@@ -24,22 +31,48 @@ class BudgetExceeded(TimeoutError):
 
 
 def error_cause(e: BaseException) -> str:
-    """LLM 실패 원인 분류: timeout · 429 · 5xx · parse · cooldown · budget · other (로그와 집계용)."""
+    """LLM 실패 원인 분류: timeout · 429 · auth(401·403) · model(404 모델 이름) · request(그 밖의 4xx) · 5xx · parse ·
+    cooldown · budget · other (로그와 집계용)."""
     if isinstance(e, BudgetExceeded):
         return "budget"
     if isinstance(e, (json.JSONDecodeError, KeyError, TypeError)):
         return "parse"
     code = getattr(e, "code", None)
-    if code == 429:
-        return "429"
-    if isinstance(code, int) and code >= 500:
-        return "timeout" if code == 504 else "5xx"
+    if isinstance(code, int):
+        if code == 429:
+            return "429"
+        if code in (401, 403):
+            return "auth"
+        if code == 404:
+            return "model"
+        if code >= 500:
+            return "timeout" if code == 504 else "5xx"
+        if code >= 400:
+            return "request"
     text = f"{type(e).__name__} {e}".lower()
-    if "timeout" in text or "timed out" in text:
+    if "timeout" in text or "timed out" in text or "응답 없음" in text:
         return "timeout"
     if "건너뜀" in str(e):
         return "cooldown"
     return "other"
+
+
+def scrub(text: str, limit: int = 200) -> str:
+    """로그용 응답 본문 앞부분: API 키 값과 key=·token= 형태는 가린다 (키는 로그에 절대 남기지 않는다)."""
+    key = os.environ.get("GEMINI_API_KEY")
+    if key:
+        text = text.replace(key, "***")
+    return re.sub(r"(?i)(key|token|authorization)\s*[=:]\s*\S+", r"\1=***", text)[:limit]
+
+
+def fallback(stage: str, e: BaseException) -> str:
+    """단계(parser·agent·response)의 LLM 실패를 집계하고 원인·본문 앞부분을 로그에 남긴다. 원인을 돌려준다."""
+    cause = error_cause(e)
+    STATS[f"{stage}_fallback"] += 1
+    STATS[f"{stage}_fail_{cause}"] += 1
+    log.warning("%s LLM 실패 → 규칙 기반 cause=%s type=%s code=%s 본문=%s", stage, cause, type(e).__name__,
+                getattr(e, "code", None), scrub(str(e)))
+    return cause
 
 
 @dataclass
@@ -90,38 +123,48 @@ class GeminiClient:
         models = list(self.cfg["models"])
         while models:
             model = models[0]
-            # Gemini는 10초보다 짧은 기한을 400으로 거부한다: 남은 예산이 min_timeout_s보다 짧으면 호출하지 않는다
             remaining = self._budget(start, deadline)
-            if remaining < self.cfg["min_timeout_s"]:
-                if last is None:
-                    STATS["llm_skipped_budget"] += 1
-                    raise BudgetExceeded(f"남은 시간 {remaining:.1f}초로 LLM 호출을 건너뜀")
-                break
-            conf.http_options = types.HttpOptions(timeout=int(min(self.cfg["timeout_s"], remaining) * 1000))
+            if remaining < self.cfg["min_wait_s"]:  # 시간이 모자람(느린 응답·질문 예산)은 장애가 아니다: 차단기 없이 이번만 건너뛴다
+                if last is not None and error_cause(last) != "timeout":
+                    break  # 앞 모델들이 429·5xx로 실패했다 → 아래에서 차단기
+                STATS["llm_skipped_budget"] += 1
+                raise BudgetExceeded(f"남은 시간 {remaining:.1f}초로 LLM 호출을 건너뜀"
+                                     + (f" (앞 실패: {error_cause(last)})" if last else ""))
+            wait = min(self.cfg["timeout_s"], remaining)
+            # Gemini는 10초보다 짧은 HTTP 기한을 400으로 거부한다: 기한은 min_timeout_s 이상으로 주고, 기다리는 건 wait까지만
+            conf.http_options = types.HttpOptions(timeout=int(max(self.cfg["min_timeout_s"], wait) * 1000))
             t = time.time()
             STATS["llm_calls"] += 1
             try:
-                r = self.client.models.generate_content(model=model, contents=contents, config=conf)
+                r = _POOL.submit(self.client.models.generate_content, model=model, contents=contents,
+                                 config=conf).result(timeout=wait)
             except Exception as e:  # 429·5xx·타임아웃·연결 오류는 다음 모델로, 그 밖의 4xx(요청 오류)는 그대로 올린다
-                if isinstance(e, errors.APIError) and e.code not in (429, 500, 503, 504):
-                    raise
+                if isinstance(e, TimeoutError) and not str(e):  # 기다림 포기(concurrent.futures)
+                    e = TimeoutError(f"{model} {wait:.1f}초 안에 응답 없음")
                 cause = error_cause(e)
                 STATS[f"llm_fail_{cause}"] += 1
+                if isinstance(e, errors.APIError) and e.code not in (429, 500, 503, 504):
+                    log.warning("llm %s 요청 오류 cause=%s code=%s 본문=%s", model, cause, e.code, scrub(str(e)))
+                    raise e
                 last = e
-                wait = self.cfg["retry_429_backoff_s"]
-                if cause == "429" and not retried and self._budget(start, deadline) - wait >= self.cfg["min_timeout_s"]:
-                    retried = True  # 한도 초과는 잠깐 기다리면 풀리는 경우가 많다: 같은 모델로 한 번만 더 (지수 백오프 1단계)
-                    log.warning("llm %s 429, %.0f초 뒤 다시 시도", model, wait)
-                    time.sleep(wait)
+                backoff = self.cfg["retry_429_backoff_s"]
+                if cause in ("429", "5xx") and not retried and self._budget(start, deadline) - backoff >= self.cfg["min_wait_s"]:
+                    # 한도 초과(429)·일시 과부하(503)는 잠깐 기다리면 풀리는 경우가 많고, 다음 모델은 더 느리다:
+                    # 같은 모델로 한 번만 더 (지수 백오프 1단계)
+                    retried = True
+                    log.warning("llm %s %s, %.1f초 뒤 다시 시도 본문=%s", model, cause, backoff, scrub(str(e)))
+                    time.sleep(backoff)
                     continue
-                log.warning("llm %s 실패 cause=%s, 다음 모델 시도", model, cause)
+                log.warning("llm %s 실패 cause=%s ms=%d 본문=%s, 다음 모델 시도", model, cause,
+                            (time.time() - t) * 1000, scrub(str(e)))
                 models.pop(0)
                 continue
             u = r.usage_metadata
             log.info("llm model=%s in=%s out=%s ms=%d", model, u and u.prompt_token_count,
                      u and u.candidates_token_count, (time.time() - t) * 1000)  # 프롬프트 원문은 남기지 않는다
             return r
-        self._down_until = time.time() + self.cfg["cooldown_s"]
+        if error_cause(last) != "timeout":  # 시도한 모델이 모두 429·5xx로 실패: 잠시 LLM을 건너뛴다 (타임아웃만이면 다음엔 다시 시도)
+            self._down_until = time.time() + self.cfg["cooldown_s"]
         raise last
 
     def chat(self, system, messages, tools=None, deadline: float | None = None) -> LLMReply:
@@ -158,7 +201,11 @@ class GeminiClient:
         r = self._generate(prompt, types.GenerateContentConfig(
             system_instruction=system, temperature=self.cfg["temperature"],
             response_mime_type="application/json", response_json_schema=schema), deadline)
-        out = json.loads(r.text)
+        try:
+            out = json.loads(r.text)
+        except (json.JSONDecodeError, TypeError):
+            log.warning("llm JSON 파싱 실패 본문=%s", scrub(r.text or ""))
+            raise
         self._cache[key] = (time.time(), out)  # ponytail: 프로세스 메모리 캐시, 여러 워커면 Redis 등으로
         return out
 

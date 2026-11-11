@@ -11,7 +11,7 @@ from services import llm
 def client(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     c = llm.GeminiClient()
-    c.cfg = {**c.cfg, "timeout_s": 0.4, "min_timeout_s": 0.1, "total_timeout_s": 0.6, "cooldown_s": 60,
+    c.cfg = {**c.cfg, "timeout_s": 0.4, "min_timeout_s": 0.1, "min_wait_s": 0.1, "total_timeout_s": 0.6, "cooldown_s": 60,
              "retry_429_backoff_s": 0.05, "reserve_s": 0}
     return c
 
@@ -33,10 +33,33 @@ def test_total_wait_is_capped_across_fallback_models(client):
     assert time.time() - t < 0.9  # 모델 수 × 타임아웃(1.2초)이 아니라 총 상한(0.6초) 근처에서 끝난다
     assert calls[0] == calls[1]  # 429는 잠깐 기다렸다가 같은 모델로 한 번 더(지수 백오프 1단계)
 
-    t = time.time()
+    assert time.time() >= client._down_until  # 느린 응답(타임아웃)만으로는 차단기를 걸지 않는다
+
+
+def test_all_models_unavailable_trips_breaker(client):
+    calls = []
+
+    def down(model, contents, config):
+        calls.append(model)
+        raise errors.ServerError(503, {})
+
+    client.client.models.generate_content = down
+    with pytest.raises(errors.ServerError):
+        client._generate("x", types.GenerateContentConfig())
+    t, n = time.time(), len(calls)
     with pytest.raises(RuntimeError):  # 차단기: 다음 호출은 기다리지 않고 바로 실패 → 규칙 기반으로
         client._generate("x", types.GenerateContentConfig())
-    assert time.time() - t < 0.05 and len(calls) <= 3
+    assert time.time() - t < 0.05 and len(calls) == n
+
+
+def test_slow_call_waits_only_for_budget(client):
+    """Gemini HTTP 기한(최소 10초)과 무관하게 질문 예산만큼만 기다린다."""
+    client.cfg = {**client.cfg, "min_timeout_s": 10}
+    client.client.models.generate_content = lambda model, contents, config: time.sleep(1)
+    t = time.time()
+    with pytest.raises(TimeoutError):
+        client._generate("x", types.GenerateContentConfig(), deadline=time.monotonic() + 0.3)
+    assert time.time() - t < 0.5
 
 
 def test_request_errors_are_not_retried(client):
@@ -79,6 +102,13 @@ def test_request_budget_skips_call(client):
 
 
 @pytest.mark.parametrize("err, cause", [(errors.ClientError(429, {}), "429"), (TimeoutError("read timeout"), "timeout"),
+                                        (errors.ClientError(401, {}), "auth"), (errors.ClientError(404, {}), "model"),
+                                        (llm.json.JSONDecodeError("x", "", 0), "parse"),
                                         (ValueError("x"), "other"), (KeyError("answer"), "parse")])
 def test_error_cause(err, cause):
     assert llm.error_cause(err) == cause
+
+
+def test_scrub_hides_key(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "sekret-123")
+    assert "sekret" not in llm.scrub("bad key sekret-123 / key=abc token: xyz")

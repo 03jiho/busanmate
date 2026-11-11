@@ -586,6 +586,8 @@ with st.sidebar:
             st.write(r.get("error", {}).get("message") or f"수집 시작 · {ss.run_id}")
         if ss.get("run_id") and st.button("진행 상황", disabled=not token):
             st.json(api("GET", f"/api/admin/ingest/{ss.run_id}", headers={"X-Admin-Token": token}))
+        with st.expander("디버그 · LLM 대체 횟수"):  # 서버 시작 이후 단계별 호출·대체·실패 원인 (키 없음)
+            st.json(api("GET", "/api/health").get("llm") or {})
 
 # --- 본문: 대화 (UI-01, UI-02) ---
 shared = st.query_params.get("course")

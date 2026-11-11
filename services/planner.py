@@ -99,6 +99,8 @@ def select(scored: list[dict], k: int, food_cap: int | None = None, mixed: bool 
             drop.add(cafe)
         if mixed and sum(eating(q) for q in chosen) >= (k + 1) // 2:
             drop |= {_food(), cafe}
+        share = max(1, int(k * c["max_category_share"]))  # 한 분류가 하루의 절반을 넘지 않게
+        drop |= {cat for cat, n in Counter(q["category"] for q in chosen).items() if n >= share}
         if drop and any(p["category"] not in drop for p in pool):  # 다른 후보가 남아 있는 동안만
             pool = [p for p in pool if p["category"] not in drop]
         if outdoor_cap is not None and sum(map(is_outdoor, chosen)) >= outdoor_cap \
@@ -301,6 +303,10 @@ def plan_day(scored: list[dict], k: int, hours: float, mode: str, check_variety:
         notices.append(f"점심 시간({lo}~{hi})에 식당이 오도록 배치하지 못했습니다.")
     if day_minutes(ordered, mode) > hours * 60:
         notices.append("가용 시간 안에 모두 둘러보기 빠듯한 일정입니다.")
+    share = max(1, int(len(ordered) * config()["course"]["max_category_share"]))
+    for cat, n in Counter(p["category"] for p in ordered).items():
+        if n > share and not eating({"category": cat}):  # 먹는 곳 쏠림은 식사 규칙 쪽 안내로
+            notices.append(f"근처에 다른 종류 후보가 부족해 {cat}이(가) {n}곳 들어갔어요.")
     return ordered, notices
 
 

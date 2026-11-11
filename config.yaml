@@ -6,11 +6,12 @@ llm:                                # 제공자는 .env의 LLM_PROVIDER (기본 
   models: [gemini-3.5-flash-lite, gemini-3.5-flash, gemini-3.8-flash]
   temperature: 0.2
   timeout_s: 15                     # 모델 하나의 최대 대기 (Gemini는 10초보다 짧은 기한을 400으로 거부)
-  min_timeout_s: 10                 # 남은 예산이 이보다 짧으면 호출하지 않고 바로 규칙 기반으로 (Gemini 최소 기한)
+  min_timeout_s: 10                 # HTTP 기한의 하한 (Gemini는 10초보다 짧은 기한을 400으로 거부)
+  min_wait_s: 3                     # 남은 예산이 이보다 짧으면 호출하지 않고 바로 규칙 기반으로 (기다리는 시간은 예산까지만)
   total_timeout_s: 15               # 폴백 모델·429 재시도까지 합친 한 번의 호출 최대 대기
   request_budget_s: 20              # 질문 하나의 전체 응답 시간 상한(검색·날씨·길찾기 포함). LLM은 이 안에서만 부른다
-  reserve_s: 3                      # 마감 전에 남겨 둘 시간(LLM 뒤의 응답 조립·전송). 남은 시간 - reserve_s < min_timeout_s면 LLM을 건너뜀
-  retry_429_backoff_s: 1            # 429(한도)면 이만큼 기다렸다가 같은 모델로 한 번 더 (지수 백오프의 첫 단계)
+  reserve_s: 2                      # 마감 전에 남겨 둘 시간(LLM 뒤의 응답 조립·전송). 남은 시간 - reserve_s < min_wait_s면 LLM을 건너뜀
+  retry_429_backoff_s: 1            # 429(한도)·503(과부하)면 이만큼 기다렸다가 같은 모델로 한 번 더 (지수 백오프의 첫 단계)
   cooldown_s: 60                    # 모든 모델이 실패하면 이 시간 동안 LLM을 건너뛰고 규칙 기반으로 처리
   cache_ttl_s: 86400                # 조건 추출 응답 캐시 (이동시간은 캐시 대상 아님, ADR-008)
   prompt_version: v1                # agent/prompts/<이름>_<버전>.md
@@ -106,6 +107,8 @@ course:                             # COMP-06, FR-006, FR-014
   day_radius_km: 8                  # 초안: auto/taxi일 때 같은 기준의 반경
   walk_max_leg_min: 30              # 초안: 도보만일 때 구간 하나의 최대 도보 시간
   max_same_category_run: 2          # 같은 분류 3곳 연속 금지
+  max_category_share: 0.5           # 한 분류는 하루 장소의 절반까지 (다른 분류 후보가 남아 있는 동안)
+  mix_categories: [카페, 시장, 거리·마을, 공원·자연, 관광지]  # 한 분류로 쏠린 검색 결과에 같은 구에서 섞어 넣을 분류(날씨 규칙 안에서)
   food_per_day: {default: 2, food_theme: 3}  # 초안: 하루 음식점 상한(끼니 수). 분류를 음식점으로 직접 지정하면 상한 없음
 
 budget:                             # 예상 비용 (services/budget.py). 식비는 1인, 택시비는 1대 기준

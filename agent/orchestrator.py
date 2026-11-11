@@ -15,10 +15,10 @@ import tools  # noqa: F401  (tools 패키지가 도구 모듈을 모두 등록�
 from agent import prompt, session
 from agent.query_parser import parse
 from agent.response import build_response
-from services.llm import ToolCall, error_cause, get_llm
+from services.llm import FALLBACK_NOTICE, STATS, ToolCall, fallback, get_llm
 from services.search import Conditions
 from settings import config
-from tools.base import REGISTRY, ToolResult, declarations
+from tools.base import REGISTRY, ToolResult, declarations, steps_schema
 from tools.weather import KST
 
 log = logging.getLogger("agent")
@@ -52,6 +52,7 @@ class State(TypedDict, total=False):
     action: dict | None
     suggest: str | None
     deadline: float
+    plan_steps: list | None
 
 
 def _max_calls() -> int:
@@ -81,28 +82,51 @@ def parse_node(state: State) -> dict:
     if p["intent"] == "edit" and s["last_conditions"]:  # 대화로 고칠 때도 직전 코스의 조건·날짜를 그대로 쓴다
         cond, dates = replace(s["last_conditions"], must=p["conditions"].must), s["last_dates"]
     return {**fresh, "intent": p["intent"], "conditions": cond, "dates": dates, "edit": p["edit"], "suggest": p.get("suggest"),
-            "clarify": p["clarify"], "notices": p["notices"], "course": s["last_course"] if p["intent"] == "edit" else None}
+            "clarify": p["clarify"], "notices": p["notices"], "plan_steps": p.get("steps"),
+            "course": s["last_course"] if p["intent"] == "edit" else None}
+
+
+def plan_schema() -> dict:
+    return {"type": "object", "properties": {"steps": steps_schema()}, "required": ["steps"]}
+
+
+def to_calls(steps: list[dict] | None) -> list[ToolCall]:
+    """구조화 출력의 steps → 도구 호출 (없는 도구 이름·빈 인자는 버린다)."""
+    return [ToolCall(s["name"], {k: v for k, v in s.items() if k != "name" and v not in (None, "")})
+            for s in steps or [] if s.get("name") in REGISTRY]
+
+
+def _default_calls(state: State) -> list[ToolCall]:
+    """의도의 기본 순서 중 아직 안 한 도구 (SDD §7.4)."""
+    plan = [n for n in DEFAULT_PLAN.get(state["intent"], []) if n not in state["tool_log"]]
+    return [ToolCall(n, dict(state["edit"] or {}) if n == "edit_course" else {}) for n in plan]
 
 
 def agent_node(state: State) -> dict:
     if state.get("action"):  # 버튼 수정은 할 일이 정해져 있다: LLM 없이 edit_course → get_route_times
-        plan = [n for n in DEFAULT_PLAN["edit"] if n not in state["tool_log"]]
-        return {"pending": [ToolCall(n, dict(state["edit"]) if n == "edit_course" else {}) for n in plan]}
+        return {"pending": _default_calls(state)}
+    if state["tool_log"]:  # LLM 계획을 한 번 실행했는데 마지막 단계가 남았다: 다시 묻지 않고 기본 순서로 마저 (LLM 왕복 1회)
+        return {"pending": _default_calls(state)}
+    if calls := to_calls(state.get("plan_steps")):  # 해석 단계가 같은 JSON에 도구 계획까지 줬다: 따로 묻지 않는다
+        STATS["agent_from_parser"] += 1
+        return {"pending": calls}
     system = prompt("agent").format(
         intent=state["intent"], conditions=json.dumps(asdict(state["conditions"]), ensure_ascii=False),
         dates=", ".join(map(str, state["dates"])) or "없음",
         edit=json.dumps(state["edit"], ensure_ascii=False) if state["edit"] else "없음",
         has_course="있음" if state.get("course") else "없음", max_calls=_max_calls())
-    messages = state["messages"] or [{"role": "user", "text": state["message"]}]
-    try:
-        reply = get_llm().chat(system, messages, declarations(), deadline=state.get("deadline"))
+    tools_desc = "\n".join(f"- {t['name']}: {t['description']}" for t in declarations())
+    STATS["agent_calls"] += 1
+    try:  # 함수 호출 대신 JSON 스키마 한 번: 계획 전체를 한 번에 받아 파싱 실패와 왕복을 줄인다
+        out = get_llm().json(system + "\n\n도구 목록\n" + tools_desc, state["message"], plan_schema(),
+                             deadline=state.get("deadline"))
+        calls = to_calls(out["steps"])
+        if not calls and state["intent"] in DEFAULT_PLAN:
+            raise KeyError("steps")  # 빈 계획 = 파싱 실패로 보고 기본 순서로
     except Exception as e:
-        log.warning("agent LLM 실패 cause=%s %s", error_cause(e), type(e).__name__)
-        plan = [n for n in DEFAULT_PLAN.get(state["intent"], []) if n not in state["tool_log"]]
-        calls = [ToolCall(n, dict(state["edit"] or {}) if n == "edit_course" else {}) for n in plan]
-        return {"pending": calls, "llm_down": True,
-                "notices": state["notices"] + ["AI가 도구를 고르지 못해 기본 순서로 처리했습니다."]}
-    return {"messages": messages + [{"role": "model", "reply": reply}], "pending": reply.tool_calls}
+        fallback("agent", e)
+        return {"pending": _default_calls(state), "llm_down": True, "notices": state["notices"] + [FALLBACK_NOTICE]}
+    return {"pending": calls}
 
 
 def tools_node(state: State) -> dict:

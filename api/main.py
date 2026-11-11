@@ -326,7 +326,7 @@ def health():
         checks["vector"] = db.collection("place_text").count() > 0
     except Exception:
         checks["vector"] = False
-    from services.llm import STATS  # 요약(LLM) 대체 발생률과 실패 원인별 횟수 (프로세스 시작 이후)
-    calls = STATS["response_calls"]
-    llm = {**dict(STATS), "response_fallback_rate": round(STATS["response_fallback"] / calls, 3) if calls else None}
+    from services.llm import STATS  # 단계별(해석·도구 선택·요약) LLM 대체 횟수·비율과 실패 원인별 횟수 (프로세스 시작 이후)
+    llm = {**dict(STATS), **{f"{st}_fallback_rate": round(STATS[f"{st}_fallback"] / STATS[f"{st}_calls"], 3)
+                             if STATS[f"{st}_calls"] else None for st in ("parser", "agent", "response")}}
     return {"status": "ok" if all(checks.values()) else "degraded", **checks, "llm": llm}

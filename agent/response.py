@@ -6,7 +6,7 @@ import re
 
 from agent import prompt
 from agent.explain import enrich
-from services.llm import STATS, error_cause, get_llm
+from services.llm import FALLBACK_NOTICE, STATS, fallback, get_llm
 from services.search import fetch_places, source_of
 
 log = logging.getLogger("agent")
@@ -73,7 +73,8 @@ def _says_something(text: str | None, p: dict) -> bool:
 
 
 def clip(text: str | None, limit: int = 110) -> str | None:
-    """긴 설명은 문장 단위로 자른다. 잘랐을 때만 '…'를 붙이고, 첫 문장부터 길면 마지막 띄어쓰기에서 자른다."""
+    """긴 설명은 문장 단위로 자른다. 문장 끝(마침표 등)에서 끝나면 그대로, 문장 중간에서 잘렸을 때만 '…' 하나를 붙인다.
+    첫 문장부터 길면 마지막 띄어쓰기에서 자른다."""
     if not text or len(text) <= limit:
         return text
     out = ""
@@ -83,7 +84,8 @@ def clip(text: str | None, limit: int = 110) -> str | None:
         out = f"{out} {sent}".strip()
     if not out:
         out = text[:limit].rsplit(" ", 1)[0]
-    return out.rstrip(" ,·") + "…"
+    out = out.rstrip(" ,·")
+    return out if re.search(r"[.!?。…]$", out) else out + "…"
 
 
 def intro_line(p: dict) -> str | None:
@@ -142,7 +144,7 @@ def build_response(state: dict) -> dict:
     context = {
         "request": state.get("message"), "intent": intent,
         "places": [{"id": i, "name": places[i]["name"], "category": places[i]["category"], "gu": places[i]["gu"],
-                    "summary": (places[i]["description"] or "")[:200]} for i in ids],
+                    "summary": (places[i]["description"] or "")[:120]} for i in ids],
         "course": [{"day": d["day"], "order": [i["place_id"] for i in d["items"]]} for d in course["days"]] if course else None,
         "weather": state.get("rain_by_day"),
         "festivals": [f["name"] for f in state.get("festivals") or []],
@@ -160,16 +162,11 @@ def build_response(state: dict) -> dict:
         if dropped:
             log.warning("verify_places 제거 id=%s", dropped)  # ERR-007
     except Exception as e:
-        # 원인을 남긴다(예외 종류 + 메시지 앞부분, 키·토큰처럼 보이는 값은 가림). 질의 원문은 남기지 않는다 (SDD §8)
-        reason = re.sub(r"(?i)(key|token|authorization|serviceKey)\s*[=:]\s*\S+", r"\1=***", str(e))[:160]
-        cause = error_cause(e)  # timeout · 429 · 5xx · parse · cooldown · budget · other
-        STATS["response_fallback"] += 1
-        STATS[f"response_fail_{cause}"] += 1
-        log.warning("response LLM 실패 cause=%s %s %s", cause, type(e).__name__, reason)
+        fallback("response", e)  # 원인·본문 앞부분(키는 가림)을 로그와 집계에. 질의 원문은 남기지 않는다 (SDD §8)
         answer = rule_summary(course, [places[i]["name"] for i in ids], state.get("dates"))
         # 추천 이유는 DB 설명의 첫 줄(공공데이터 장소 소개 문구)로 대신한다. 근거는 여전히 DB뿐이다 (AI-REQ-01·02)
         reasons = {i: intro_line(places[i]) for i in ids}
-        notices.append("AI 설명을 만들지 못해 추천 이유를 장소 소개 문구로 대신합니다.")
+        notices.append(FALLBACK_NOTICE)
     # 추천 이유가 빈 카드(LLM이 빠뜨렸거나 소개 문구가 없음)는 분류와 주소로 만든 한 줄로 채운다 (DB 정보만 씀)
     reasons = {i: clip(reasons.get(i)) if _says_something(reasons.get(i), places[i]) else fallback_line(places[i])
                for i in ids}
@@ -180,6 +177,7 @@ def build_response(state: dict) -> dict:
                 item["name"], item["reason"] = places[item["place_id"]]["name"], reasons.get(item["place_id"])
         enrich(course, places, state.get("conditions"))  # 왜 이곳?, 출처 확인 수, 예상 시간 계산 방식, 예상 비용
     sources = [source_of(places[i]) for i in ids] + list(state.get("sources") or [])
+    notices = list(dict.fromkeys(notices))  # 단계마다 같은 대체 안내가 붙어도 한 줄만
     return {"answer": answer, "course": course, "sources": sources, "notices": notices,
             "places": None if course else [{**source_of(places[i]), "category": places[i]["category"],
                                             "gu": places[i]["gu"], "reason": reasons.get(i)} for i in ids]}
