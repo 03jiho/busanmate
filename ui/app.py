@@ -219,6 +219,9 @@ def photo_line(s: dict, image: dict) -> str:
     return f"사진 출처: {s['label']} · [원본 이미지]({image['url']}) · {image.get('license') or '이용 조건 정보 없음'}"
 
 
+# 날씨가 코스에 영향을 준 알림(펼쳐서 보임): "강수확률 60%라 실내 장소를 우선", "비 예보 … 야외 장소 N곳(우산)"
+WEATHER_NOTICE = re.compile(r"강수확률|비 예보|우산")
+
 # 사진 없는 카드의 자리표시 아이콘 (분류별)
 CATEGORY_ICON = {"해변": "🏖️", "공원·자연": "🌳", "문화시설": "🏛️", "관광지": "📍", "카페": "☕", "음식점": "🍽️",
                  "시장": "🛍️", "거리·마을": "🏘️", "사찰·종교": "🛕"}
@@ -403,8 +406,14 @@ def show_result(r: dict, key: str, latest: bool = False, stream: bool = False, r
     trust_badges(r)
     if latest and (err := ss.pop("edit_error", None)):
         st.error(err)
-    for n in [x for x in r.get("notices") or [] if "찾지 못해" not in x]:  # 없는 장소 안내는 배지에서 한 번만
-        st.info(n)
+    notices = [x for x in r.get("notices") or [] if "찾지 못해" not in x]  # 없는 장소 안내는 배지에서 한 번만
+    for n in [x for x in notices if WEATHER_NOTICE.search(x)]:  # 날씨가 코스를 바꾼 알림만 펼쳐 둔다
+        st.info(n, icon=":material/umbrella:")
+    rest = [x for x in notices if not WEATHER_NOTICE.search(x)]
+    if rest:  # 예보 범위 밖·도보 예상치 같은 참고 알림은 하나로 접어 둔다
+        with st.expander(f"알림 {len(rest)}개", icon=":material/info:"):
+            for n in rest:
+                st.caption(n)
     if stream:  # 새 답변은 문장이 흘러나오듯 (verify_places를 거친 뒤의 문장이다)
         st.write_stream(_chunks(r["answer"]))
     else:

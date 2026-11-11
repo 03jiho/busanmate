@@ -112,3 +112,16 @@ def test_category_check_flags_cafe_with_meal_description():
     assert "카페인데" in contradiction(steak)
     assert contradiction({**steak, "category": "음식점"}) is None
     assert contradiction({"name": "빵집", "category": "카페", "description": "빵집\n대표 메뉴: 커피, 케이크"}) is None
+
+
+@pytest.mark.parametrize("name, cat", [("동백섬", "공원·자연"), ("오시리아 해안 산책로", "공원·자연"), ("송도해안볼레길", "공원·자연"),
+                                       ("다대포해변공원", "공원·자연"), ("송정해수욕장", "해변"), ("해운대", "해변")])
+def test_island_park_trail_are_not_beach(name, cat):
+    assert classify(name)[0] == cat
+
+
+def test_every_mapped_category_is_listed():
+    from settings import config
+    c = config()["classify"]
+    used = {r["category"] for r in c["rules"]} | {c["food"]["category"], c["cafe"]["category"], c["default"]["category"]}
+    assert used <= set(c["categories"])

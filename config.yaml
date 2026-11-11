@@ -61,6 +61,8 @@ ingest:
 # names: 정확히 일치, keywords: 포함되면 매치, suffixes: 이름(끝의 "부산" 제외)이 그 글자로 끝나면 매치.
 # indoor: true/false/null(불명)
 classify:
+  # 서비스 전체의 장소 분류 목록 (검색 필터·해석기·화면 아이콘이 이 이름을 쓴다). 매핑은 아래 rules(위에서부터 처음 맞는 것)
+  categories: [음식점, 카페, 해변, 공원·자연, 문화시설, 관광지, 거리·마을, 시장, 사찰·종교]
   food: {category: 음식점, indoor: true}
   # 맛집 데이터 중 카페: 이름이나 대표 메뉴에 이 말이 있으면 음식점이 아니라 카페 (코스 수정의 "카페 추가")
   cafe: {category: 카페, indoor: true, keywords: [카페, 커피, 디저트, 베이커리, 브레드, 로스터, 제과, 다방, 티하우스, cafe, coffee],
@@ -69,7 +71,9 @@ classify:
          food_menu_keywords: [스테이크, 한우, 갈비, 고기, 코스요리, 육회, 회, 초밥, 국밥, 정식, 한식, 일식, 중식, 양식, 파스타, 피자]}
   rules:
     - {category: 시장, indoor: null, keywords: [시장, 지하도상가]}
-    - {category: 해변, indoor: false, names: [해운대, 청사포와 미포, 동백섬], keywords: [해수욕장, 해변, 해안, 해파랑길]}
+    # 섬·공원·산책로는 바닷가에 있어도 해변이 아니라 공원·자연 (동백섬, 해안 산책로, 해변공원; 2026-11-12)
+    - {category: 공원·자연, indoor: false, names: [동백섬], keywords: [산책로, 볼레길, 둘레길, 갈맷길, 해변공원], suffixes: [섬]}
+    - {category: 해변, indoor: false, names: [해운대, 청사포와 미포], keywords: [해수욕장, 해변, 해안, 해파랑길]}
     - {category: 문화시설, indoor: true, keywords: [박물관, 미술관, 갤러리, 기념관, 역사관, 문화관, 문학관, 과학관, 전시관, 홍보관, 체험관, 민속관, 도서관, 센터, 문화원, 국악원, 아쿠아리움, 생가, 전당, 극장, 아트, 뮤지엄], suffixes: [관]}
     - {category: 공원·자연, indoor: false, keywords: [공원, 숲, 수목원, 전망대, 등대, 계곡, 폭포, 습지, 생태, 해상케이블카, 스카이워크], suffixes: [대, 도, 산, 봉]}
     - {category: 사찰·종교, indoor: false, keywords: [성당, 교회, 향교, 사찰], suffixes: [사, 암]}
@@ -160,6 +164,7 @@ weather:                            # COMP-07, FR-004
   rain_prob_threshold: 60
   rain_outdoor_max: 2               # 초안: 강수확률이 임계 이상인 날의 야외 장소 상한(실내 후보가 모자랄 때만 넘김)
   rain_outdoor_penalty: 0.3
+  summary_rain_min: 30              # 요약에서 날씨를 조건으로 꼭 다룰 강수확률(이상)
   rain_first_outdoor_km: 50         # 비 오는 날 첫 장소가 야외면 더하는 거리 비용(가능하면 실내로 시작)
   rain_hour_weight_km: 3             # 비 오는 날 순서 정하기: 야외 장소 체류 시간대 강수확률 100%를 이동거리 몇 km로 칠지         # 초안: 그날 야외 장소 점수에서 더 뺀다(날씨 항 0과 별도)
   outdoor_categories: [해변, 공원·자연]

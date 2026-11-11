@@ -505,13 +505,19 @@ def test_reason_grounding():
 def test_summary_must_mention_a_condition():
     from services.search import Conditions as C
     cond = C(query="x", theme="바다", gu=["해운대구"])
-    assert response.mentions_condition("해운대 바다를 따라 걷는 하루예요.", cond)
-    assert response.mentions_condition("비 예보가 있어 실내 위주로 짰어요.", C(query="x"))
-    assert not response.mentions_condition("멋진 곳들을 차례로 둘러보는 일정입니다.", C(query="x", gu=["중구"]))
     course = {"days": [{"day": 1, "rain_prob": 20, "items": [
         {"name": "가", "leg_to_next": {"mode": "walk", "minutes": 5}}, {"name": "나", "leg_to_next": None}]}]}
+    ok = response.summary_ok
+    assert ok("해운대 바다를 따라 걷는 하루예요.", cond, course)            # 테마 + 동선 (강수 20%라 날씨는 해당 없음)
+    assert not ok("해운대 바다가 보이는 곳들이에요.", cond, course)         # 테마 1개뿐
+    assert ok("가까운 곳끼리 걸어서 잇는 일정이에요.", C(query="x"), course)  # 해당 항목이 동선 하나뿐이면 1개로 충분
+    wet = {"days": [{**course["days"][0], "rain_prob": 70}]}
+    assert not ok("바다를 보며 걷는 코스예요.", cond, wet)                  # 비 예보인데 우산·실내 언급 없음
+    assert ok("비 예보가 있어 실내 위주로, 바다 근처는 짧게 걸어요.", cond, wet)
     text = response.rule_summary(course, ["가", "나"], None, cond)
-    assert "'바다' 테마" in text and "강수확률 20%" in text and "걸어서" in text
+    assert "'바다' 테마" in text and "강수확률 20%" in text and "걸어서" in text and ok(text, cond, course)
+    text = response.rule_summary(wet, ["가", "나"], None, cond)
+    assert "우산" in text and ok(text, cond, wet)
 
 
 def test_why_lists_concrete_conditions_or_nothing():

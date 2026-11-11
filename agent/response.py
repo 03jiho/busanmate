@@ -7,7 +7,9 @@ import re
 from agent import prompt
 from agent.explain import enrich
 from services.llm import FALLBACK_NOTICE, STATS, fallback, get_llm
+from services.planner import rainy
 from services.search import fetch_places, source_of
+from settings import config
 
 log = logging.getLogger("agent")
 MARKER = re.compile(r"\[\[(\d+)\]\]")
@@ -118,14 +120,24 @@ def fallback_line(p: dict) -> str:
     return f"{addr}에 있는 {p['category']}입니다."
 
 
-# 요약에 요청 조건(날씨·테마·지역·동선)이 들어갔는지 볼 낱말. 테마·지역 이름은 요청에서 더한다
-_COND_WORDS = re.compile(r"비 |비가|비 예보|강수|맑|날씨|우산|실내|야외|걸어|도보|택시|동선|이동|가까|산책")
+# 요약 검사용 낱말: 날씨 · 동선 특징 · 비 예보 문장(우산·실내)
+_WEATHER_WORDS = re.compile(r"비 |비가|비 예보|강수|맑|날씨|우산|실내|흐림|흐린")
+_ROUTE_WORDS = re.compile(r"걸어|걷|도보|택시|동선|이동|가까|산책")
+_RAIN_SENTENCE = re.compile(r"우산|실내")
 
 
-def mentions_condition(answer: str, cond) -> bool:
-    """요약이 날씨·테마·지역·동선 특징 중 하나 이상을 말하는가."""
-    words = [getattr(cond, "theme", None)] + [g[:-1] if len(g) >= 3 else g for g in getattr(cond, "gu", None) or []]  # 해운대구→해운대, 중구는 그대로
-    return bool(_COND_WORDS.search(answer)) or any(w and w in answer for w in words)
+def summary_ok(answer: str, cond, course: dict | None) -> bool:
+    """코스 요약 규칙: 날씨(강수확률 30% 이상인 날이 있을 때)·테마(요청에 있을 때)·동선 특징 중 해당되는 것 2개 이상
+    (해당 항목이 1개뿐이면 그 1개). 비 예보(rain_prob_threshold 이상)가 있으면 우산 또는 실내 위주라는 말이 있어야 한다."""
+    rains = [d.get("rain_prob") for d in (course or {}).get("days", []) if d.get("rain_prob") is not None]
+    groups = {"route": bool(_ROUTE_WORDS.search(answer))}
+    if any(r >= config()["weather"]["summary_rain_min"] for r in rains):
+        groups["weather"] = bool(_WEATHER_WORDS.search(answer))
+    if getattr(cond, "theme", None):
+        groups["theme"] = cond.theme in answer
+    if sum(groups.values()) < min(2, len(groups)):
+        return False
+    return not any(rainy(r) for r in rains) or bool(_RAIN_SENTENCE.search(answer))
 
 
 def condition_line(course: dict, cond) -> str:
@@ -143,7 +155,10 @@ def condition_line(course: dict, cond) -> str:
     walk = sum(lg["mode"] == "walk" for lg in legs)
     if legs:
         parts.append("걸어서 잇는 구간이 많은 동선" if walk * 2 >= len(legs) else "택시로 잇는 구간이 많은 동선")
-    return "조건: " + " · ".join(parts) + "." if parts else ""
+    line = "조건: " + " · ".join(parts) + "." if parts else ""
+    if any(rainy(r) for _, r in rain):  # 비 예보: 우산·실내 위주라는 문장을 꼭 넣는다
+        line += " 비 예보가 있어 실내 위주로 짰고, 야외 장소에서는 우산이 필요해요."
+    return line.strip()
 
 
 def rule_summary(course: dict | None, names: list[str], dates: list | None = None, cond=None) -> str:
@@ -216,7 +231,7 @@ def build_response(state: dict) -> dict:
                 reasons[r["place_id"]], dropped = text, dropped + bad
         if dropped:
             log.warning("verify_places 제거 id=%s", dropped)  # ERR-007
-        if course and not mentions_condition(answer, state.get("conditions")):  # 조건 없는 요약 → 규칙 기반으로
+        if course and not summary_ok(answer, state.get("conditions"), course):  # 조건이 모자란 요약 → 규칙 기반으로
             STATS["summary_no_condition"] += 1
             answer = rule_summary(course, [places[i]["name"] for i in ids], state.get("dates"), state.get("conditions"))
     except Exception as e:
